@@ -1,0 +1,20 @@
+# ESP32-C6 (Bluetooth 5.0, native USB-Serial-JTAG) overrides — auto-merged on top
+# of sdkconfig.defaults when the target is esp32c6.
+#
+# Enable extended advertising with several concurrent advertising instances, so
+# splinter runs genuinely-simultaneous decoys (each its own MAC) instead of the
+# one-at-a-time legacy advertiser on the classic ESP32. The instances are
+# configured as LEGACY PDUs in firmware (see splinter_main.c) so ordinary/legacy
+# scanners still see them.
+CONFIG_BT_NIMBLE_EXT_ADV=y
+CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=4
+
+# The ESP32-C6 SuperMini exposes a single USB-C port wired straight to the chip's
+# native USB-Serial-JTAG. Route the console there so `idf.py flash monitor` and
+# runtime logs work over that one port.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# 4 MB flash with an OTA-capable custom partition table (two app slots).
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
