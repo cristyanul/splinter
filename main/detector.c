@@ -122,9 +122,14 @@ static void detector_task(void *arg)
         bool got = (xQueueReceive(s_queue, &sg, pdMS_TO_TICKS(1000)) == pdTRUE);
         if (xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) continue;
         uint32_t t = now_ms();
+        int allow_before = s_state.nallow;
         if (got) dc_ingest(&s_state, &sg, t);
         if (dc_due_scene(&s_state, t)) dc_scene_tick(&s_state, t);
         dc_score(&s_state, t);
+        // Auto-learn (the boot/safe window) grows the allowlist in RAM; persist
+        // it so the learned home baseline survives a reboot or reflash. Growth
+        // only happens during a safe window, so this is not a hot-path write.
+        if (s_state.nallow != allow_before) allow_save();
         xSemaphoreGive(s_lock);
     }
 }

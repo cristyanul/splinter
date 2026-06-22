@@ -28,8 +28,10 @@
 
 static const char *TAG = "splinter-wifi";
 static volatile uint32_t s_rate = 0;
+static volatile bool s_paused = false;   // held true during a Wi-Fi mode switch
 
 uint32_t decoys_wifi_rate(void) { return s_rate; }
+void decoys_wifi_set_paused(bool paused) { s_paused = paused; }
 
 // Swarm rendezvous: how often to park on SWARM_CHANNEL to exchange personas,
 // and how long to dwell there listening for peers each time.
@@ -220,6 +222,10 @@ static void task_wifi(void *arg) {
         if (!cfg->wifi_enabled) {
             s_rate = 0;
             vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+        if (s_paused) {                      // Wi-Fi mode switch in progress — keep off the radio
+            vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
 

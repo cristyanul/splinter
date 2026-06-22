@@ -14,6 +14,27 @@ static dc_sighting_t mk(uint8_t last, int8_t rssi, dc_radio_t r) {
     return s;
 }
 
+// Drive `dev` through `n` scene changes so scenes_survived == n. Each round
+// swaps in two fresh close decoys and drops the previous pair, turning the
+// close-set over >50% (a scene change) while `dev` stays present in both
+// scenes. This is how a real follower accrues "survived" credit: it stays with
+// you as your surroundings change.
+static void survive(dc_state_t *s, const dc_sighting_t *dev, int n) {
+    s->scene_ms = 1000;
+    uint32_t t = 100;
+    dc_ingest(s, dev, t);
+    dc_sighting_t a = mk(0x80, -50, DC_RADIO_WIFI); dc_ingest(s, &a, t);
+    dc_sighting_t b = mk(0x81, -50, DC_RADIO_WIFI); dc_ingest(s, &b, t);
+    dc_scene_tick(s, t + 900);                       // baseline scene, no survival
+    for (int i = 0; i < n; i++) {
+        t += 1000;
+        dc_ingest(s, dev, t);
+        dc_sighting_t c = mk((uint8_t)(0x82 + 2 * i), -50, DC_RADIO_WIFI); dc_ingest(s, &c, t);
+        dc_sighting_t d = mk((uint8_t)(0x83 + 2 * i), -50, DC_RADIO_WIFI); dc_ingest(s, &d, t);
+        dc_scene_tick(s, t + 900);
+    }
+}
+
 static void test_ingest_adds_and_updates(void) {
     dc_state_t s; dc_init(&s);
     dc_sighting_t a = mk(0x01, -50, DC_RADIO_WIFI);
@@ -52,31 +73,59 @@ static void test_scene_survival(void) {
 }
 
 static void test_scoring(void) {
-    dc_state_t s; dc_init(&s);
-    s.persist_ms = 1000;
-    // Close + persistent (duration) device -> threat
-    dc_sighting_t f = mk(0x09, -55, DC_RADIO_WIFI);
-    dc_ingest(&s, &f, 0);
-    dc_ingest(&s, &f, 1500);          // duration 1500 >= persist_ms
-    dc_score(&s, 1500);
-    CHECK(dc_find(&s, f.id)->flags & DC_F_THREAT);
-    CHECK(dc_threat_count(&s) == 1);
-    // Allowlisted identical device -> not a threat
-    dc_allow(&s, f.id, true);
-    dc_score(&s, 1500);
-    CHECK(!(dc_find(&s, f.id)->flags & DC_F_THREAT));
-    // Unknown tracker tag, persistent but far -> still a threat (kind path)
-    dc_sighting_t t = mk(0x0a, -85, DC_RADIO_BLE); t.tracker_kind = DC_TRK_APPLE_FINDMY;
-    dc_ingest(&s, &t, 0);
-    dc_ingest(&s, &t, 1500);
-    dc_score(&s, 1500);
-    CHECK(dc_find(&s, t.id)->flags & DC_F_THREAT);
-    // snapshot returns the threats. At this point f is allowlisted (not a
-    // threat) and only the tracker-tag device t is scored as a threat, so the
-    // snapshot holds exactly one entry.
-    dc_threat_t out[8];
-    int n = dc_threats(&s, out, 8);
-    CHECK(n == 1);
+    // A close device that merely sits in range for a long time but never moves
+    // with you (scenes_survived == 0) is NOT a follower -> not a threat. This is
+    // the stationary-at-home false positive we explicitly reject.
+    {
+        dc_state_t s; dc_init(&s);
+        dc_sighting_t still = mk(0x09, -55, DC_RADIO_WIFI);
+        dc_ingest(&s, &still, 0);
+        dc_ingest(&s, &still, 3600000);   // present an hour, but 0 scenes survived
+        dc_score(&s, 3600000);
+        CHECK(!(dc_find(&s, still.id)->flags & DC_F_THREAT));
+        CHECK(dc_threat_count(&s) == 0);
+    }
+    // A close device that stays with you across scene changes -> threat.
+    {
+        dc_state_t s; dc_init(&s);
+        dc_sighting_t f = mk(0x09, -55, DC_RADIO_WIFI);
+        survive(&s, &f, 3);
+        dc_score(&s, 100000);
+        CHECK(dc_find(&s, f.id)->flags & DC_F_THREAT);
+        CHECK(dc_threat_count(&s) == 1);
+        // Allowlisted identical device -> not a threat
+        dc_allow(&s, f.id, true);
+        dc_score(&s, 100000);
+        CHECK(!(dc_find(&s, f.id)->flags & DC_F_THREAT));
+    }
+    // A tracker tag that moved with you (survived scenes) but now reads far ->
+    // still a threat via the kind path (proximity not required once it has
+    // tracked you across scenes).
+    {
+        dc_state_t s; dc_init(&s);
+        dc_sighting_t t = mk(0x0a, -68, DC_RADIO_BLE); t.tracker_kind = DC_TRK_APPLE_FINDMY;
+        survive(&s, &t, 3);
+        for (int k = 0; k < 6; k++) {     // pull EWMA below "close" without ticking
+            dc_sighting_t far = mk(0x0a, -95, DC_RADIO_BLE); far.tracker_kind = DC_TRK_APPLE_FINDMY;
+            dc_ingest(&s, &far, 5000 + k);
+        }
+        dc_dev_t *td = dc_find(&s, t.id);
+        CHECK(td->rssi_ewma < s.rssi_close);   // genuinely "far" now
+        CHECK(td->scenes_survived >= 3);
+        dc_score(&s, 6000);
+        CHECK(td->flags & DC_F_THREAT);
+    }
+    // A far tracker tag that NEVER moved with you (the neighbour's tag through a
+    // wall, the exact -97 dBm false positive) -> NOT a threat.
+    {
+        dc_state_t s; dc_init(&s);
+        dc_sighting_t amb = mk(0x0b, -95, DC_RADIO_BLE); amb.tracker_kind = DC_TRK_SAMSUNG;
+        dc_ingest(&s, &amb, 0);
+        dc_ingest(&s, &amb, 3600000);
+        dc_score(&s, 3600000);
+        CHECK(!(dc_find(&s, amb.id)->flags & DC_F_THREAT));
+        CHECK(dc_threat_count(&s) == 0);
+    }
 }
 
 static void test_safe_window_autolearn(void) {
@@ -93,15 +142,14 @@ static void test_safe_window_autolearn(void) {
 
 static void test_radar_and_allowlist(void) {
     dc_state_t s; dc_init(&s);
-    s.persist_ms = 1000;
-    dc_sighting_t f = mk(0x30, -55, DC_RADIO_WIFI);          // follower: close+persistent
-    dc_ingest(&s, &f, 0); dc_ingest(&s, &f, 1500);
+    dc_sighting_t f = mk(0x30, -55, DC_RADIO_WIFI);          // follower: close + moved with you
+    survive(&s, &f, 3);
     dc_sighting_t t = mk(0x31, -45, DC_RADIO_BLE);           // trusted + present
-    dc_ingest(&s, &t, 0);
+    dc_ingest(&s, &t, 5000);
     dc_allow(&s, t.id, true);
     uint8_t absent[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x99}; // trusted but never seen
     dc_allow(&s, absent, true);
-    dc_score(&s, 1500);
+    dc_score(&s, 5000);
 
     dc_radar_t r[8];
     int n = dc_radar(&s, r, 8);

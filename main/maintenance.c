@@ -435,7 +435,7 @@ static void http_start(void)
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.lru_purge_enable = true;
     cfg.stack_size = 8192;
-    cfg.max_uri_handlers = 14; // default is 8; we register 12 and want headroom
+    cfg.max_uri_handlers = 16; // default is 8; we register 12 and want headroom
     if (httpd_start(&srv, &cfg) != ESP_OK) {
         ESP_LOGE(TAG, "http server start failed");
         return;
@@ -479,6 +479,22 @@ static void littlefs_mount_once(void)
     mounted = true;
 }
 
+// The ONE guarded way to change Wi-Fi mode while the radios are live. It
+// quiesces the decoy TX + promiscuous sniffer, waits for in-flight ops to drain,
+// switches mode, then resumes. A bare esp_wifi_set_mode() concurrent with active
+// TX/RX can hard-hang the Wi-Fi driver — so once the engines are running, mode
+// changes MUST go through here, never esp_wifi_set_mode() directly.
+static esp_err_t wifi_set_mode_safe(wifi_mode_t mode)
+{
+    decoys_wifi_set_paused(true);
+    esp_wifi_set_promiscuous(false);
+    vTaskDelay(pdMS_TO_TICKS(60));            // let in-flight TX/RX drain
+    esp_err_t err = esp_wifi_set_mode(mode);
+    esp_wifi_set_promiscuous(true);           // restore the always-on sniffer
+    decoys_wifi_set_paused(false);
+    return err;
+}
+
 void webui_start(void)
 {
     if (srv != NULL) return;
@@ -486,7 +502,7 @@ void webui_start(void)
 
     littlefs_mount_once();
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    ESP_ERROR_CHECK(wifi_set_mode_safe(WIFI_MODE_APSTA));
     wifi_softap_start();
     http_start();
 }
@@ -495,7 +511,8 @@ void webui_stop(void)
 {
     if (srv == NULL) return;
     ESP_LOGW(TAG, "Stopping Web UI...");
+
     httpd_stop(srv);
     srv = NULL;
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(wifi_set_mode_safe(WIFI_MODE_STA));
 }

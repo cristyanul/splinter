@@ -5,8 +5,7 @@ void dc_init(dc_state_t *s)
     memset(s, 0, sizeof(*s));
     s->rssi_close     = -70;
     s->scene_ms       = 45000;
-    s->persist_scenes = 3;
-    s->persist_ms     = 600000;   // 10 min
+    s->persist_scenes = 3;        // scene changes a device must survive to flag
     s->jaccard_pct    = 50;
 }
 
@@ -133,21 +132,25 @@ void dc_begin_safe(dc_state_t *s, uint32_t now_ms, uint32_t dur_ms)
     s->safe_until_ms = now_ms + dur_ms;
 }
 
-static bool persistent(const dc_state_t *s, const dc_dev_t *d, uint32_t now_ms)
+// "Following" means a device stays with you as your surroundings change — not
+// merely that it has been in range for a while. A stationary device (yours or a
+// neighbour's) sitting near a fixed location racks up duration without ever
+// tracking you, so we require survived scene transitions and never a raw
+// elapsed duration. No movement in the environment => nothing can be a follower.
+static bool persistent(const dc_state_t *s, const dc_dev_t *d)
 {
-    (void)now_ms;
-    uint32_t dur = d->last_seen_ms - d->first_seen_ms;
-    return (d->scenes_survived >= s->persist_scenes) || (dur >= s->persist_ms);
+    return d->scenes_survived >= s->persist_scenes;
 }
 
 void dc_score(dc_state_t *s, uint32_t now_ms)
 {
+    (void)now_ms;
     for (int i = 0; i < s->ndev; i++) {
         dc_dev_t *d = &s->dev[i];
         bool threat = false;
         if (!(d->flags & DC_F_ALLOW)) {
             bool close = d->rssi_ewma >= s->rssi_close;
-            bool persist = persistent(s, d, now_ms);
+            bool persist = persistent(s, d);
             // standard path: close AND persistent
             if (close && persist) threat = true;
             // tracker-kind path: an unknown tag that persists, even if not close

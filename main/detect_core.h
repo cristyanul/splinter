@@ -73,8 +73,7 @@ typedef struct {
     // tunables (set by dc_init)
     int8_t   rssi_close;      // dBm; >= is "close"
     uint32_t scene_ms;        // scene window length
-    uint8_t  persist_scenes;  // scenes_survived threshold
-    uint32_t persist_ms;      // continuous-duration threshold
+    uint8_t  persist_scenes;  // scenes_survived threshold to flag a follower
     uint8_t  jaccard_pct;     // < this (intersection/union %) = scene change
 } dc_state_t;
 
