@@ -5,9 +5,18 @@ idf_component_register(
         "status_led.c"
         "decoys_ble.c"
         "decoys_154.c"
+        "decoys_wifi.c"
+        "profiles.c"
         "maintenance.c"
+        "swarm.c"
+        "detect_core.c"
+        "detector.c"
+        "sniff_wifi.c"
+        "sniff_ble.c"
     INCLUDE_DIRS "."
     REQUIRES bt nvs_flash esp_driver_gpio led_strip
              esp_wifi esp_event esp_netif esp_http_server app_update
-             ieee802154
+             ieee802154 littlefs mbedtls
 )
+
+littlefs_create_partition_image(ui ../webui FLASH_IN_PROJECT)

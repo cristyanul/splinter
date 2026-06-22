@@ -16,7 +16,13 @@ CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
-CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
 
 # Slightly larger app log buffer is handy while we tune on hardware.
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# OTA safety: let the bootloader roll back to the previous app if a freshly
+# flashed image fails to boot cleanly. The app confirms health by calling
+# esp_ota_mark_app_valid once init succeeds — see ota_confirm_healthy() in
+# splinter_main.c.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

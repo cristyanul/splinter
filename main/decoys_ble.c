@@ -29,6 +29,8 @@
 
 #include "decoy_vendors.h"
 #include "config.h"
+#include "profiles.h"
+#include "sniff_ble.h"
 
 static const char *TAG = "splinter-ble";
 
@@ -173,8 +175,27 @@ static void splinter_run(void)
              SPLINTER_INSTANCES);
 
     uint8_t inst = 0;
+    bool advertising = true;
     uint32_t t0 = esp_log_timestamp(), ok = 0, fail = 0;
     for (;;) {
+        const splinter_cfg_t *cfg = config_get();
+
+        // Live toggle: stop all advertising sets when disabled (controller and
+        // host stay up, so re-enabling resumes instantly without a reboot).
+        if (!cfg->ble_enabled) {
+            if (advertising) {
+                for (uint8_t i = 0; i < SPLINTER_INSTANCES; i++) {
+                    ble_gap_ext_adv_stop(i);
+                }
+                advertising = false;
+                s_rate = 0;
+                ESP_LOGW(TAG, "BLE decoys disabled; advertising stopped");
+            }
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+        advertising = true;
+
         if (refresh_instance(inst) == 0) {
             ok++;
         } else {
@@ -195,7 +216,8 @@ static void splinter_run(void)
         // Always yield: a tight loop starves the BLE host, the USB console and
         // the idle/WDT tasks. Instances keep advertising concurrently meanwhile.
         // This yield window is also where the 802.15.4 decoy task gets airtime.
-        vTaskDelay(pdMS_TO_TICKS(config_get()->ble_refresh_ms));
+        // Pacing is modulated by the breathing density multiplier (min 1 ms).
+        vTaskDelay(pdMS_TO_TICKS(profiles_scale_interval(cfg->ble_refresh_ms, 1)));
     }
 }
 
@@ -236,6 +258,16 @@ static void splinter_run(void)
     ESP_LOGW(TAG, "BENCHMARK/flood: rotating one legacy advertiser at max rate");
     uint32_t t0 = esp_log_timestamp(), ok = 0, fail = 0;
     for (;;) {
+        const splinter_cfg_t *cfg = config_get();
+
+        // Live toggle: stop advertising and idle while disabled.
+        if (!cfg->ble_enabled) {
+            ble_gap_adv_stop();
+            s_rate = 0;
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+
         ble_gap_adv_stop();
         if (start_one_decoy() == 0) {
             ok++;
@@ -267,6 +299,8 @@ static void on_sync(void)
 {
     s_host_synced = true;
     ESP_LOGI(TAG, "NimBLE host synced");
+
+    sniff_ble_start();
 }
 
 static void on_reset(int reason)

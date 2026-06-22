@@ -10,10 +10,19 @@ fabricates a churning crowd of plausible-but-fake wireless devices so that, in a
 control, a tracking or scanning system sees lots of ordinary-looking traffic and your real
 device(s) don't stand out.
 
-It now uses **two radios at once**:
+It now uses **three radios at once**:
 
 - **Bluetooth LE** — a flood of fake, non-connectable BLE devices (the original behaviour).
 - **IEEE 802.15.4** — fake Zigbee-style PANs on the Thread/Zigbee radio (new in this fork).
+- **Wi-Fi** — fake 802.11 Probe Requests from a pool of virtual devices, each with a stable
+  rotating MAC, a per-vendor IE fingerprint (Apple / Samsung / Intel / generic), and realistic
+  channel-weighted scan bursts — so it reads as a crowd of real phones, not one synthetic source.
+- **Dynamic Profiles** — optional "Breathing" mode that randomly scales decoy density over time to simulate organic crowd movement.
+- **Swarm (ESP-NOW)** — optional coordination so multiple splinters share decoy personas over the air instead of overlapping.
+- **Detection (passive)** — beyond emitting decoys, splinter watches BLE + Wi-Fi for a
+  device that persists with you across time and location (an unknown AirTag/SmartTag/Tile,
+  or a tailing phone) and warns you — LED alert + a live **Threat Radar** in the web UI
+  that plots followers and trusted devices by signal strength (with MAC/RSSI and allowlist management).
 
 Plus quality-of-life upgrades: **persistent configuration**, a **Wi-Fi maintenance mode**
 with a web UI for **over-the-air (OTA) firmware updates** and live config, and an onboard
@@ -97,15 +106,16 @@ idf.py -p <PORT> flash monitor
 After the first cable flash, you never need the cable again — use **maintenance mode** below
 for over-the-air updates.
 
-## Maintenance mode (live config + OTA)
+## Maintenance web UI (live config + OTA)
 
-splinter has two modes. Normal mode runs the decoys with **no Wi-Fi** (the radio is theirs
-alone). Maintenance mode pauses the decoys and brings up **Wi-Fi only**, so updating never
-competes with or disturbs the decoy radios.
+The decoys (BLE, 802.15.4 and Wi-Fi) run continuously. The maintenance web UI is a
+SoftAP + HTTP server you can **toggle on and off live, without rebooting** — the decoys
+keep running underneath it. With Wi-Fi up, all radios share the single RF front-end via
+software coexistence; turning off the Wi-Fi decoys returns that airtime to BLE / 802.15.4.
 
-**To enter it:** press the **BOOT** button while splinter is running. It saves a one-shot
-flag and reboots into maintenance (LED turns **solid blue**). A plain reset (RST), or the
-web UI's *Reboot to normal* button, returns to decoy mode.
+**To toggle it:** tap the **BOOT** button while splinter is running. The first tap brings
+the SoftAP + web UI up (LED turns **solid blue**); the next tap takes it back down (LED
+returns to **breathing green**). No reboot, no one-shot flag — it is a plain live toggle.
 
 **To use it:**
 
@@ -113,17 +123,75 @@ web UI's *Reboot to normal* button, returns to decoy mode.
 2. Open **`http://192.168.4.1/`** in a browser.
 3. From the page you can:
    - **Edit configuration** — all settings below; saved to flash, so they persist across
-     reboots.
-   - **Update firmware (OTA)** — pick a `build/splinter.bin` and upload; the device writes
-     it to the spare app slot and reboots into the new firmware.
-   - **Reboot to normal** — go back to decoying.
+     reboots and apply live.
+   - **Update firmware (OTA)** — pick a `build/splinter.bin` and upload (with a live
+     progress bar); the device validates the image header before committing, writes it
+     to the spare app slot, and reboots into the new firmware. If the new image fails
+     to boot cleanly, the bootloader **rolls back** to the previous one automatically.
+   - **Reboot Device** — restart into decoy mode.
 
-The SSID/password are themselves configurable on that page.
+The page also shows **live health** — uptime, free heap, and the real per-radio on-air rates
+(BLE refreshes/s, Zigbee PANs/s, Wi-Fi probes/s) so you can confirm each engine at a glance.
+
+The SoftAP SSID/password are configurable on that page. For safety the current password is
+**never sent back** to the browser (the field shows blank); leave it blank to keep the existing
+key, or type a new one to change it. Pick a password ≥ 8 characters — shorter than that and the
+AP falls back to **open** (unencrypted), which exposes config + OTA to anyone in range.
+
+## Swarm mode (ESP-NOW)
+
+Off by default. When two or more splinters are in radio range, **swarm mode** lets
+them coordinate over **ESP-NOW** so the fake devices they emit look like one
+coherent crowd seen from several vantage points, instead of each unit inventing
+its own overlapping set.
+
+How it works:
+
+- **Rendezvous channel.** The single radio can only sit on one channel at a time,
+  and the decoys spend their time hopping to flood probes — so left alone, ESP-NOW
+  frames would almost never line up. Each unit therefore parks briefly on a fixed
+  **rendezvous channel** (`SWARM_CHANNEL`, default 6) about once a second to
+  broadcast one persona and listen for peers. Peers reproduce that persona
+  (same MAC, vendor fingerprint, channel, SSID), so the same "device" appears
+  from multiple units.
+- **Authentication.** ESP-NOW broadcast frames can't be link-encrypted, so each
+  persona carries a truncated **HMAC-SHA256** tag keyed by a shared fleet secret.
+  Personas that fail the tag (or come from a different key) are dropped, so an
+  outsider can't inject fake devices into your swarm.
+
+> **Set your own key.** Before deploying more than one unit, change `SWARM_KEY`
+> in `main/swarm.c` to a unique 16-byte value shared only by your fleet. Units
+> with different keys simply ignore each other.
+
+Enable it from the web UI (**ESP-NOW Swarm Mode** toggle). It applies live.
+
+## Follower detection (passive)
+
+On by default (`Detection` toggle). splinter passively listens — Wi-Fi via promiscuous
+sniffing that rides the decoy channel hopping, BLE via a low-duty observer scan — and
+scores nearby devices by **proximity** and **persistence across location changes**
+(inferred from how much the surrounding device set churns, no GPS needed). A device that
+stays close and survives several environment changes, or an unknown tracking tag that
+lingers, raises an alert: the LED pulses red/purple and the **Threat Radar** plots it (red),
+with your trusted devices in green. Tap a blip for its MAC/RSSI and to trust/untrust it; the
+"Trusted devices" list manages your allowlist, including devices not currently in range.
+The radar is honest about the hardware: distance = signal strength, direction is not measured.
+
+Your own devices are auto-trusted during a ~3-minute learning window at boot — or press
+**"I'm safe — learn surroundings"** any time to re-learn. You can also **Ignore** any
+detection to allowlist it permanently (stored in NVS).
+
+**Limits (be honest):** modern phones and AirTags rotate their MAC, so some followers are
+tracked at the device-kind/fingerprint level rather than a pinned address. Detection rides
+a single low-power 2.4 GHz radio shared with the decoys; it catches casual and
+consumer-grade tracking, not a determined adversary using PHY-layer evasion.
 
 ## Configuration
 
-Settings are stored in NVS and editable live in maintenance mode. Compile-time **defaults**
-live in `main/config.c` (used the first time, before anything is saved):
+Settings are stored in NVS (one key per field) and editable live from the web UI. Because
+each field is stored separately, a **firmware upgrade keeps your settings** — a new build
+that adds a field just uses that field's default while preserving everything else. Compile-time
+**defaults** live in `main/config.c` (used the first time, before anything is saved):
 
 | Setting | Default | Effect |
 |---------|---------|--------|
@@ -136,6 +204,9 @@ live in `main/config.c` (used the first time, before anything is saved):
 | 802.15.4 beacon interval | 100 ms | Time between fake PAN beacons |
 | 802.15.4 answer beacon requests | off | Reply to active scans (keeps RX on) |
 | 802.15.4 channel mask | 11–26 | Channels the beacons hop across |
+| Wi-Fi enabled | on | Run the Wi-Fi decoy flood (Probe Requests) |
+| Wi-Fi probe interval | 200 ms | Time between fake Wi-Fi probe requests |
+| Dynamic Profiles | on | Enable "Breathing mode" to dynamically scale density |
 | SoftAP SSID / password | `Splinter-Setup` / `splinter-setup` | Maintenance Wi-Fi |
 
 The number of concurrent BLE advertising instances is a build-time setting
@@ -147,10 +218,13 @@ within the 31-byte advertising budget).
 
 | File | Responsibility |
 |------|----------------|
-| `main/splinter_main.c` | Init, mode select (NVS boot flag + BOOT button), wire-up |
+| `main/splinter_main.c` | Init, decoy wire-up, BOOT-button web-UI toggle |
 | `main/config.{c,h}` | NVS-backed config + compile-time defaults |
 | `main/decoys_ble.{c,h}` | BLE extended-advertising decoy engine |
 | `main/decoys_154.{c,h}` | 802.15.4 fake Zigbee PAN engine |
+| `main/decoys_wifi.{c,h}` | Wi-Fi 802.11 Probe Request spoofer engine |
+| `main/profiles.{c,h}` | Dynamic "Breathing" mode density scalar |
+| `main/swarm.{c,h}` | ESP-NOW swarm transport (shared decoy personas) |
 | `main/maintenance.{c,h}` | Wi-Fi SoftAP + web UI (config + OTA) |
 | `main/status_led.{c,h}` | WS2812 status LED |
 | `partitions.csv` | 4 MB dual-slot OTA layout |

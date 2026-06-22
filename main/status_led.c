@@ -37,6 +37,16 @@ static void led_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(30));
             break;
         }
+        case LED_STATE_ALERT: {
+            // Pulsing red↔purple: keep red bright, breathe the blue channel so the
+            // hue swings from red toward purple. Reuses the RUNNING triangular wave.
+            phase = (phase + 8) % 360;
+            int level = (phase < 180) ? (phase * 80 / 180)
+                                      : ((360 - phase) * 80 / 180);
+            set_rgb(180, 0, (uint8_t)level);
+            vTaskDelay(pdMS_TO_TICKS(30));
+            break;
+        }
         case LED_STATE_MAINTENANCE: set_rgb(0,  0, 20); vTaskDelay(pdMS_TO_TICKS(250)); break;
         case LED_STATE_OTA:         set_rgb(22, 13, 0); vTaskDelay(pdMS_TO_TICKS(120)); break;
         case LED_STATE_ERROR:       set_rgb(22, 0,  0); vTaskDelay(pdMS_TO_TICKS(300)); break;

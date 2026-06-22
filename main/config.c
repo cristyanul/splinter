@@ -7,7 +7,14 @@
 
 static const char *TAG = "splinter-cfg";
 static const char *NS  = "splinter";
-static const char *KEY = "cfg";
+
+// Config is stored as one NVS key per field (not a single blob). This is
+// forward/backward compatible: adding a field in a new firmware just means its
+// key is absent on an upgraded device, so it keeps its compile-time default
+// instead of wiping everything. "ver" marks that the per-key store exists;
+// LEGACY_BLOB_KEY is the old single-blob key, migrated once on first boot.
+#define CFG_KEY_VERSION   "ver"
+static const char *LEGACY_BLOB_KEY = "cfg";
 
 static splinter_cfg_t s_cfg;
 
@@ -27,31 +34,89 @@ void config_set_defaults(splinter_cfg_t *c)
     c->ieee154_beacon_ms = 100;
     c->ieee154_respond   = false;       // default off: keeps RX (and radio) light
 
+    c->wifi_enabled      = true;
+    c->wifi_interval_ms  = 200;
+
+    c->profiles_enabled  = true;
+    c->swarm_enabled     = false;
+
+    c->detect_enabled    = true;
+
     strncpy(c->softap_ssid, "Splinter-Setup",  sizeof(c->softap_ssid) - 1);
     strncpy(c->softap_pass, "splinter-setup",  sizeof(c->softap_pass) - 1);
 }
 
+// Read a bool stored as u8; leave *v untouched (default) if the key is absent.
+static void load_bool(nvs_handle_t h, const char *k, bool *v)
+{
+    uint8_t b;
+    if (nvs_get_u8(h, k, &b) == ESP_OK) *v = (b != 0);
+}
+
+// Overlay any stored fields onto the already-defaulted s_cfg. Missing keys (new
+// fields on a freshly upgraded device) simply keep their defaults.
+static void config_load_keys(nvs_handle_t h)
+{
+    load_bool  (h, "ble_en",   &s_cfg.ble_enabled);
+    nvs_get_u16(h, "ble_adv",  &s_cfg.ble_adv_ms);
+    nvs_get_u8 (h, "ble_name", &s_cfg.ble_name_prob);
+    nvs_get_u8 (h, "ble_mfg",  &s_cfg.ble_mfg_prob);
+    nvs_get_u16(h, "ble_ref",  &s_cfg.ble_refresh_ms);
+
+    load_bool  (h, "g_en",     &s_cfg.ieee154_enabled);
+    nvs_get_u32(h, "g_mask",   &s_cfg.ieee154_chan_mask);
+    nvs_get_u16(h, "g_beac",   &s_cfg.ieee154_beacon_ms);
+    load_bool  (h, "g_resp",   &s_cfg.ieee154_respond);
+
+    load_bool  (h, "wifi_en",  &s_cfg.wifi_enabled);
+    nvs_get_u16(h, "wifi_int", &s_cfg.wifi_interval_ms);
+
+    load_bool  (h, "prof_en",  &s_cfg.profiles_enabled);
+    load_bool  (h, "swarm_en", &s_cfg.swarm_enabled);
+    load_bool  (h, "det_en",   &s_cfg.detect_enabled);
+
+    size_t n;
+    n = sizeof(s_cfg.softap_ssid);
+    nvs_get_str(h, "ssid", s_cfg.softap_ssid, &n);
+    n = sizeof(s_cfg.softap_pass);
+    nvs_get_str(h, "pass", s_cfg.softap_pass, &n);
+}
+
 void config_init(void)
 {
+    config_set_defaults(&s_cfg);
+
     nvs_handle_t h;
     esp_err_t err = nvs_open(NS, NVS_READWRITE, &h);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "nvs_open failed (%s); using defaults", esp_err_to_name(err));
-        config_set_defaults(&s_cfg);
         return;
     }
 
-    size_t sz = sizeof(s_cfg);
-    err = nvs_get_blob(h, KEY, &s_cfg, &sz);
-    if (err != ESP_OK || sz != sizeof(s_cfg) || s_cfg.version != SPLINTER_CFG_VERSION) {
-        ESP_LOGI(TAG, "no valid stored config; writing defaults");
-        config_set_defaults(&s_cfg);
-        nvs_set_blob(h, KEY, &s_cfg, sizeof(s_cfg));
-        nvs_commit(h);
-    } else {
-        ESP_LOGI(TAG, "loaded config from NVS");
+    uint8_t ver;
+    if (nvs_get_u8(h, CFG_KEY_VERSION, &ver) == ESP_OK) {
+        config_load_keys(h);
+        nvs_close(h);
+        ESP_LOGI(TAG, "loaded config (per-key store, ver %u); SoftAP SSID='%s'", ver, s_cfg.softap_ssid);
+        return;
     }
+
+    // First boot on the per-key store. If a same-version legacy blob is present,
+    // migrate it so the user keeps their settings; otherwise stay on defaults.
+    splinter_cfg_t legacy;
+    size_t sz = sizeof(legacy);
+    if (nvs_get_blob(h, LEGACY_BLOB_KEY, &legacy, &sz) == ESP_OK &&
+        sz == sizeof(legacy) && legacy.version == SPLINTER_CFG_VERSION) {
+        s_cfg = legacy;
+        ESP_LOGI(TAG, "migrated legacy config blob -> per-key store");
+    } else {
+        ESP_LOGI(TAG, "no compatible stored config; writing defaults");
+    }
+    nvs_erase_key(h, LEGACY_BLOB_KEY); // best effort; ignore if absent
+    nvs_commit(h);
     nvs_close(h);
+
+    config_save(); // persist in the per-key format (also writes "ver")
 }
 
 splinter_cfg_t *config_get(void)
@@ -67,37 +132,26 @@ esp_err_t config_save(void)
         return err;
     }
     s_cfg.version = SPLINTER_CFG_VERSION;
-    err = nvs_set_blob(h, KEY, &s_cfg, sizeof(s_cfg));
-    if (err == ESP_OK) {
-        err = nvs_commit(h);
-    }
+
+    nvs_set_u8 (h, CFG_KEY_VERSION, SPLINTER_CFG_VERSION);
+    nvs_set_u8 (h, "ble_en",   s_cfg.ble_enabled);
+    nvs_set_u16(h, "ble_adv",  s_cfg.ble_adv_ms);
+    nvs_set_u8 (h, "ble_name", s_cfg.ble_name_prob);
+    nvs_set_u8 (h, "ble_mfg",  s_cfg.ble_mfg_prob);
+    nvs_set_u16(h, "ble_ref",  s_cfg.ble_refresh_ms);
+    nvs_set_u8 (h, "g_en",     s_cfg.ieee154_enabled);
+    nvs_set_u32(h, "g_mask",   s_cfg.ieee154_chan_mask);
+    nvs_set_u16(h, "g_beac",   s_cfg.ieee154_beacon_ms);
+    nvs_set_u8 (h, "g_resp",   s_cfg.ieee154_respond);
+    nvs_set_u8 (h, "wifi_en",  s_cfg.wifi_enabled);
+    nvs_set_u16(h, "wifi_int", s_cfg.wifi_interval_ms);
+    nvs_set_u8 (h, "prof_en",  s_cfg.profiles_enabled);
+    nvs_set_u8 (h, "swarm_en", s_cfg.swarm_enabled);
+    nvs_set_u8 (h, "det_en",   s_cfg.detect_enabled);
+    nvs_set_str(h, "ssid",     s_cfg.softap_ssid);
+    nvs_set_str(h, "pass",     s_cfg.softap_pass);
+
+    err = nvs_commit(h);
     nvs_close(h);
     return err;
-}
-
-uint8_t boot_mode_take(void)
-{
-    nvs_handle_t h;
-    uint8_t mode = BOOT_MODE_NORMAL;
-    if (nvs_open(NS, NVS_READWRITE, &h) == ESP_OK) {
-        if (nvs_get_u8(h, "boot_mode", &mode) != ESP_OK) {
-            mode = BOOT_MODE_NORMAL;
-        }
-        if (mode != BOOT_MODE_NORMAL) {
-            nvs_set_u8(h, "boot_mode", BOOT_MODE_NORMAL); // one-shot
-            nvs_commit(h);
-        }
-        nvs_close(h);
-    }
-    return mode;
-}
-
-void boot_mode_set(uint8_t mode)
-{
-    nvs_handle_t h;
-    if (nvs_open(NS, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_u8(h, "boot_mode", mode);
-        nvs_commit(h);
-        nvs_close(h);
-    }
 }

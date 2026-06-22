@@ -1,14 +1,16 @@
-// Maintenance mode: Wi-Fi SoftAP + web UI for OTA firmware upload and config.
-// Entered by rebooting with BOOT_MODE_MAINTENANCE set, so it runs Wi-Fi alone
-// (the decoy radios never run in this mode).
+// Web UI: Wi-Fi SoftAP + HTTP server for live config editing and OTA
+// firmware upload. Can be toggled on/off dynamically.
 #pragma once
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-// Bring up the SoftAP + HTTP server and serve until reboot. Does not return.
-void maintenance_run(void);
+// Mounts LittleFS, configures SoftAP interface, and starts the HTTP server.
+void webui_start(void);
+
+// Stops the HTTP server and brings down the SoftAP.
+void webui_stop(void);
 
 #ifdef __cplusplus
 }

@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Splinter Control</title>
+    <link rel="stylesheet" href="app.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="background-mesh"></div>
+    <div class="container">
+        <header>
+            <h1>SPLINTER</h1>
+            <div class="status-badge" id="conn-status">Connected</div>
+        </header>
+
+        <div class="dashboard-grid">
+            <div class="card controls">
+                <h2>Configuration</h2>
+                <form id="config-form">
+                    
+                    <div class="control-group">
+                        <label class="toggle">
+                            <input type="checkbox" id="ble_enabled">
+                            <span class="slider"></span>
+                        </label>
+                        <span class="label-text">BLE Decoys</span>
+                    </div>
+
+                    <div class="control-group">
+                        <label class="toggle">
+                            <input type="checkbox" id="ieee154_enabled">
+                            <span class="slider"></span>
+                        </label>
+                        <span class="label-text">Zigbee (802.15.4) Decoys</span>
+                    </div>
+
+                    <div class="control-group">
+                        <label class="toggle">
+                            <input type="checkbox" id="wifi_enabled">
+                            <span class="slider"></span>
+                        </label>
+                        <span class="label-text">Wi-Fi Decoys</span>
+                    </div>
+
+                    <div class="control-group">
+                        <label class="toggle">
+                            <input type="checkbox" id="profiles_enabled">
+                            <span class="slider"></span>
+                        </label>
+                        <span class="label-text">Dynamic Profiles (Breathing)</span>
+                    </div>
+
+                    <div class="control-group">
+                        <label class="toggle">
+                            <input type="checkbox" id="swarm_enabled">
+                            <span class="slider"></span>
+                        </label>
+                        <span class="label-text">ESP-NOW Swarm Mode</span>
+                    </div>
+                    <div class="advanced-configs" style="margin-top: 2rem; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 1rem;">
+                        <h3 style="margin-bottom: 1rem; color: #a1a1aa; font-size: 0.9rem;">BLE Advanced</h3>
+                        <div class="input-group">
+                            <label>Adv Interval (ms)</label>
+                            <input type="number" id="ble_adv_ms" min="20" max="10000">
+                        </div>
+                        <div class="input-group">
+                            <label>Name Prob (%)</label>
+                            <input type="number" id="ble_name_prob" min="0" max="100">
+                        </div>
+                        <div class="input-group">
+                            <label>Mfg Prob (%)</label>
+                            <input type="number" id="ble_mfg_prob" min="0" max="100">
+                        </div>
+                        <div class="input-group">
+                            <label>Refresh Rate (ms)</label>
+                            <input type="number" id="ble_refresh_ms" min="100" max="60000">
+                        </div>
+
+                        <h3 style="margin-top: 1rem; margin-bottom: 1rem; color: #a1a1aa; font-size: 0.9rem;">802.15.4 Advanced</h3>
+                        <div class="input-group">
+                            <label>Channel Mask</label>
+                            <input type="number" id="ieee154_chan_mask" min="1">
+                        </div>
+                        <div class="input-group">
+                            <label>Beacon Interval (ms)</label>
+                            <input type="number" id="ieee154_beacon_ms" min="20" max="10000">
+                        </div>
+                        <div class="control-group" style="margin-bottom: 1rem;">
+                            <label class="toggle">
+                                <input type="checkbox" id="ieee154_respond">
+                                <span class="slider"></span>
+                            </label>
+                            <span class="label-text">Respond to Active Scans</span>
+                        </div>
+
+                        <h3 style="margin-top: 1rem; margin-bottom: 1rem; color: #a1a1aa; font-size: 0.9rem;">Wi-Fi Advanced</h3>
+                        <div class="input-group">
+                            <label>Probe Interval (ms)</label>
+                            <input type="number" id="wifi_interval_ms" min="10" max="10000">
+                        </div>
+
+                        <h3 style="margin-top: 1rem; margin-bottom: 1rem; color: #a1a1aa; font-size: 0.9rem;">System</h3>
+                        <div class="input-group">
+                            <label>SoftAP Name (SSID)</label>
+                            <input type="text" id="softap_ssid" maxlength="32">
+                        </div>
+                        <div class="input-group">
+                            <label>SoftAP Password</label>
+                            <input type="password" id="softap_pass" maxlength="64" placeholder="leave blank to keep current">
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn primary" style="margin-top: 1.5rem;">Save Configuration</button>
+                </form>
+            </div>
+
+            <div class="card live-stats">
+                <h2>System Health</h2>
+                <div class="stat-row"><span>Uptime</span><span class="stat-value" id="stat-uptime">0s</span></div>
+                <div class="stat-row"><span>Free Heap</span><span class="stat-value" id="stat-heap">0 KB</span></div>
+                <div class="stat-row"><span>BLE decoys</span><span class="stat-value" id="stat-ble">0/s</span></div>
+                <div class="stat-row"><span>Zigbee decoys</span><span class="stat-value" id="stat-154">0/s</span></div>
+                <div class="stat-row"><span>Wi-Fi probes</span><span class="stat-value" id="stat-wifi">0/s</span></div>
+
+                <h3 style="margin-top: 2rem; margin-bottom: 0.75rem; color: #a1a1aa; font-size: 0.9rem;">Firmware Update (OTA)</h3>
+                <div class="input-group">
+                    <input type="file" id="fw-file" accept=".bin">
+                </div>
+                <button id="btn-ota" class="btn" style="margin-top: 0.5rem;">Upload &amp; Reboot</button>
+                <p id="ota-status" style="margin-top: 0.75rem; color: #a1a1aa; font-size: 0.85rem;"></p>
+
+                <button id="btn-reboot" class="btn danger" style="margin-top: 2rem;">Reboot Device</button>
+            </div>
+
+            <div class="card radar-card">
+                <h2>Threat Radar <span id="threat-badge" class="badge-zero">0</span></h2>
+                <div class="radar-wrap">
+                    <svg id="radar" viewBox="0 0 200 200" class="radar-svg"></svg>
+                </div>
+                <p class="radar-caption">Distance = signal strength · direction is not measured</p>
+                <div id="blip-detail" class="blip-detail" style="display:none;"></div>
+                <button id="btn-safe" class="btn" style="margin-top:1rem;">I'm safe — learn surroundings</button>
+                <details class="trusted-box">
+                    <summary>Trusted devices (<span id="trusted-count">0</span>)</summary>
+                    <ul id="trusted-list" class="trusted-list"></ul>
+                </details>
+            </div>
+        </div>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>

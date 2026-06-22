@@ -22,6 +22,7 @@
 #include "esp_ieee802154.h"
 
 #include "config.h"
+#include "profiles.h"
 
 static const char *TAG = "splinter-154";
 
@@ -106,37 +107,53 @@ static int build_beacon(uint8_t *buf, uint8_t seq)
 
 static void task_154(void *arg)
 {
-    esp_err_t err = esp_ieee802154_enable();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_ieee802154_enable failed: %s", esp_err_to_name(err));
-        vTaskDelete(NULL);
-        return;
-    }
-    esp_ieee802154_set_promiscuous(false);
-
-#if CONFIG_ESP_COEX_SW_COEXIST_ENABLE
-    // The driver's default coex priority makes 802.15.4 yield to BLE on every
-    // arbitration (TX_ERR_COEXIST). Raise the TX/RX priority to MIDDLE so our
-    // occasional beacons win the rare conflicts. BLE advertising is <10% airtime
-    // and keeps its own scheduled slots, so its rate is unaffected (verified).
-    esp_ieee802154_coex_config_t coex = {
-        .idle    = IEEE802154_IDLE,
-        .txrx    = IEEE802154_HIGH,
-        .txrx_at = IEEE802154_HIGH,
-    };
-    esp_ieee802154_set_coex_config(coex);
-#endif
-
-    const splinter_cfg_t *cfg = config_get();
-    esp_ieee802154_set_rx_when_idle(cfg->ieee154_respond);
-    ESP_LOGW(TAG, "802.15.4 fake-PAN beacons starting (respond=%d)", cfg->ieee154_respond);
-
+    bool radio_up = false;
     uint8_t frame[64];
     uint8_t seq = 0;
     uint32_t t0 = esp_log_timestamp();
 
     for (;;) {
-        cfg = config_get();
+        const splinter_cfg_t *cfg = config_get();
+
+        // Live toggle: bring the 802.15.4 radio up on first enable and power it
+        // back down when disabled, so the web UI switch takes effect without a
+        // reboot and frees the radio (and its coex slot) while off.
+        if (!cfg->ieee154_enabled) {
+            if (radio_up) {
+                esp_ieee802154_disable();
+                radio_up = false;
+                s_rate = 0;
+                ESP_LOGW(TAG, "802.15.4 decoys disabled; radio down");
+            }
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+
+        if (!radio_up) {
+            esp_err_t err = esp_ieee802154_enable();
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "esp_ieee802154_enable failed: %s", esp_err_to_name(err));
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                continue;
+            }
+            esp_ieee802154_set_promiscuous(false);
+#if CONFIG_ESP_COEX_SW_COEXIST_ENABLE
+            // Raise TX/RX priority so our occasional beacons win the rare coex
+            // arbitration against BLE / Wi-Fi. BLE advertising is <10% airtime
+            // and keeps its own scheduled slots, so its rate is unaffected.
+            esp_ieee802154_coex_config_t coex = {
+                .idle    = IEEE802154_IDLE,
+                .txrx    = IEEE802154_HIGH,
+                .txrx_at = IEEE802154_HIGH,
+            };
+            esp_ieee802154_set_coex_config(coex);
+#endif
+            esp_ieee802154_set_rx_when_idle(cfg->ieee154_respond);
+            ESP_LOGW(TAG, "802.15.4 fake-PAN beacons starting (respond=%d)", cfg->ieee154_respond);
+            t0 = esp_log_timestamp();
+            radio_up = true;
+        }
+
         uint8_t ch = pick_channel(cfg->ieee154_chan_mask);
         esp_ieee802154_set_channel(ch);
 
@@ -155,7 +172,8 @@ static void task_154(void *arg)
             t0 = now;
         }
 
-        uint16_t d = cfg->ieee154_beacon_ms < 10 ? 10 : cfg->ieee154_beacon_ms;
+        // Base inter-beacon delay, modulated by the breathing density multiplier.
+        uint32_t d = profiles_scale_interval(cfg->ieee154_beacon_ms, 10);
         vTaskDelay(pdMS_TO_TICKS(d));
     }
 }
