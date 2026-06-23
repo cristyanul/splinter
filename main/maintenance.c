@@ -107,6 +107,7 @@ static esp_err_t api_config_get(httpd_req_t *req) {
     char buf[1024];
     snprintf(buf, sizeof(buf), 
         "{\"ble_enabled\":%s,\"ieee154_enabled\":%s,\"wifi_enabled\":%s,\"profiles_enabled\":%s,\"swarm_enabled\":%s,"
+        "\"thread_enabled\":%s,\"awdl_enabled\":%s,"
         "\"ble_adv_ms\":%u,\"ble_name_prob\":%u,\"ble_mfg_prob\":%u,\"ble_refresh_ms\":%u,"
         "\"ieee154_chan_mask\":%lu,\"ieee154_beacon_ms\":%u,\"ieee154_respond\":%s,"
         // softap_pass is deliberately NOT returned (it would leak the AP key to
@@ -114,6 +115,7 @@ static esp_err_t api_config_get(httpd_req_t *req) {
         "\"wifi_interval_ms\":%u,\"softap_ssid\":\"%s\",\"softap_pass\":\"\"}",
         c->ble_enabled?"true":"false", c->ieee154_enabled?"true":"false", c->wifi_enabled?"true":"false",
         c->profiles_enabled?"true":"false", c->swarm_enabled?"true":"false",
+        c->thread_enabled?"true":"false", c->awdl_enabled?"true":"false",
         c->ble_adv_ms, c->ble_name_prob, c->ble_mfg_prob, c->ble_refresh_ms,
         (unsigned long)c->ieee154_chan_mask, c->ieee154_beacon_ms, c->ieee154_respond?"true":"false",
         c->wifi_interval_ms, c->softap_ssid);
@@ -141,6 +143,8 @@ static esp_err_t api_config_post(httpd_req_t *req) {
     c->profiles_enabled = (strstr(body, "\"profiles_enabled\":true") != NULL);
     c->swarm_enabled = (strstr(body, "\"swarm_enabled\":true") != NULL);
     c->ieee154_respond = (strstr(body, "\"ieee154_respond\":true") != NULL);
+    c->thread_enabled = (strstr(body, "\"thread_enabled\":true") != NULL);
+    c->awdl_enabled = (strstr(body, "\"awdl_enabled\":true") != NULL);
 
     // Simple JSON parsing for numbers and strings
     char *p;
@@ -180,17 +184,20 @@ static esp_err_t api_config_post(httpd_req_t *req) {
 }
 
 static esp_err_t api_status_get(httpd_req_t *req) {
-    char buf[224];
+    char buf[320];
     uint32_t uptime = esp_log_timestamp() / 1000;
     uint32_t heap = esp_get_free_heap_size();
     snprintf(buf, sizeof(buf),
         "{\"uptime\":%lu,\"free_heap\":%lu,"
         "\"ble_rate\":%lu,\"ieee154_rate\":%lu,\"wifi_rate\":%lu,"
+        "\"thread_rate\":%lu,\"awdl_rate\":%lu,"
         "\"threats\":%lu}",
         (unsigned long)uptime, (unsigned long)heap,
         (unsigned long)decoys_ble_rate(),
         (unsigned long)decoys_154_rate(),
         (unsigned long)decoys_wifi_rate(),
+        (unsigned long)decoys_154_thread_rate(),
+        (unsigned long)decoys_wifi_awdl_rate(),
         (unsigned long)detector_threat_count());
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, buf);

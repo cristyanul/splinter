@@ -23,14 +23,24 @@
 
 #include "config.h"
 #include "profiles.h"
+#include "decoys_thread.h"
 
 static const char *TAG = "splinter-154";
 
-static volatile uint32_t s_done = 0;   // confirmed on-air beacons (this second)
-static volatile uint32_t s_rate = 0;   // last-second confirmed beacons
-static volatile uint32_t s_skip = 0;   // beacons skipped (CCA busy / arbitration)
+static volatile uint32_t s_done = 0;       // confirmed on-air frames (this second, via callback)
+static volatile uint32_t s_skip = 0;       // frames skipped (CCA busy / arbitration)
+static volatile uint32_t s_zig_sub = 0;    // Zigbee beacons submitted (this second)
+static volatile uint32_t s_thr_sub = 0;    // Thread frames submitted (this second)
+static volatile uint32_t s_rate = 0;       // last-second Zigbee beacons/s
+static volatile uint32_t s_thread_rate = 0;// last-second Thread frames/s
 
-uint32_t decoys_154_rate(void) { return s_rate; }
+// Coherent fake Thread/Matter home(s). Initialized lazily once the radio is up
+// and persisted thereafter, so the "home" stays the same place across toggles.
+static thread_home_t s_thread_homes[THREAD_HOME_COUNT];
+static bool          s_thread_ready = false;
+
+uint32_t decoys_154_rate(void)        { return s_rate; }
+uint32_t decoys_154_thread_rate(void) { return s_thread_rate; }
 
 // TX result callbacks (weak in the driver; defined here). Kept trivial — they
 // run in driver context.
@@ -108,8 +118,9 @@ static int build_beacon(uint8_t *buf, uint8_t seq)
 static void task_154(void *arg)
 {
     bool radio_up = false;
-    uint8_t frame[64];
+    uint8_t frame[THREAD_FRAME_MAX];   // sized for Thread data frames (Zigbee beacon fits too)
     uint8_t seq = 0;
+    uint32_t step = 0;                  // paces the Zigbee/Thread interleave
     uint32_t t0 = esp_log_timestamp();
 
     for (;;) {
@@ -154,19 +165,66 @@ static void task_154(void *arg)
             radio_up = true;
         }
 
-        uint8_t ch = pick_channel(cfg->ieee154_chan_mask);
-        esp_ieee802154_set_channel(ch);
+        uint8_t last_ch = 0;
+        bool sent_thread = false;
 
-        build_beacon(frame, seq++);
-        if (esp_ieee802154_transmit(frame, true /* CCA: stay polite */) != ESP_OK) {
-            s_skip++;
+        // ---- Coherent Thread/Matter home ----
+        // When enabled, ~2 of every 3 frames carry the Thread home: a periodic
+        // beacon (the recognizable network advertisement) plus secured mesh data
+        // frames (encrypted-looking chatter), with occasional broadcasts shaped
+        // like MLE advertisements. Transmitted with CCA, never jamming.
+        if (cfg->thread_enabled) {
+            if (!s_thread_ready) {
+                uint8_t ent[40];
+                for (int i = 0; i < (int)sizeof(ent); i++) ent[i] = (uint8_t)(esp_random() & 0xff);
+                thread_home_init(s_thread_homes, THREAD_HOME_COUNT,
+                                 cfg->ieee154_chan_mask, ent, sizeof(ent));
+                s_thread_ready = true;
+                ESP_LOGW(TAG, "Thread home '%s' on ch %u (%u nodes)",
+                         s_thread_homes[0].network_name, s_thread_homes[0].channel,
+                         s_thread_homes[0].nnodes);
+            }
+            if ((step % 3) != 0) {
+                thread_home_t *home = &s_thread_homes[0];
+                last_ch = home->channel;
+                esp_ieee802154_set_channel(last_ch);
+                int n;
+                if ((step % 30) == 1) {
+                    n = thread_build_beacon(frame, home, seq++);  // network advertisement
+                } else {
+                    int src = (int)(esp_random() % home->nnodes);
+                    int dst = ((step % 17) == 0) ? -1 : (int)(esp_random() % home->nnodes);
+                    uint8_t pl[48];
+                    uint8_t plen = (uint8_t)(16 + (esp_random() % 24));
+                    for (int i = 0; i < plen; i++) pl[i] = (uint8_t)(esp_random() & 0xff);
+                    n = thread_build_data(frame, home, src, dst, seq++,
+                                          home->frame_counter++, pl, plen);
+                }
+                if (n > 0 && esp_ieee802154_transmit(frame, true) == ESP_OK) s_thr_sub++;
+                else s_skip++;
+                sent_thread = true;
+            }
         }
+
+        // ---- Fake Zigbee PAN beacon (existing churn) ----
+        if (!sent_thread) {
+            last_ch = pick_channel(cfg->ieee154_chan_mask);
+            esp_ieee802154_set_channel(last_ch);
+            build_beacon(frame, seq++);
+            if (esp_ieee802154_transmit(frame, true /* CCA: stay polite */) == ESP_OK) s_zig_sub++;
+            else s_skip++;
+        }
+        step++;
 
         uint32_t now = esp_log_timestamp();
         if (now - t0 >= 1000) {
-            s_rate = s_done;
-            ESP_LOGW(TAG, "154: %lu fake PANs/sec on-air (%lu skipped) last_ch=%u",
-                     (unsigned long)s_done, (unsigned long)s_skip, ch);
+            s_rate = s_zig_sub;
+            s_thread_rate = s_thr_sub;
+            ESP_LOGW(TAG, "154: %lu Zigbee + %lu Thread frames/sec on-air (%lu skipped, %lu cfm) last_ch=%u",
+                     (unsigned long)s_zig_sub, (unsigned long)s_thr_sub,
+                     (unsigned long)s_skip, (unsigned long)s_done, last_ch);
+            s_zig_sub = 0;
+            s_thr_sub = 0;
             s_done = 0;
             s_skip = 0;
             t0 = now;

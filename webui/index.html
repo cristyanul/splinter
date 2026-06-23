@@ -38,10 +38,26 @@
 
                     <div class="control-group">
                         <label class="toggle">
+                            <input type="checkbox" id="thread_enabled">
+                            <span class="slider"></span>
+                        </label>
+                        <span class="label-text">Thread / Matter Home (needs 802.15.4)</span>
+                    </div>
+
+                    <div class="control-group">
+                        <label class="toggle">
                             <input type="checkbox" id="wifi_enabled">
                             <span class="slider"></span>
                         </label>
                         <span class="label-text">Wi-Fi Decoys</span>
+                    </div>
+
+                    <div class="control-group">
+                        <label class="toggle">
+                            <input type="checkbox" id="awdl_enabled">
+                            <span class="slider"></span>
+                        </label>
+                        <span class="label-text">Apple AWDL / AirDrop (needs Wi-Fi)</span>
                     </div>
 
                     <div class="control-group">
@@ -122,7 +138,9 @@
                 <div class="stat-row"><span>Free Heap</span><span class="stat-value" id="stat-heap">0 KB</span></div>
                 <div class="stat-row"><span>BLE decoys</span><span class="stat-value" id="stat-ble">0/s</span></div>
                 <div class="stat-row"><span>Zigbee decoys</span><span class="stat-value" id="stat-154">0/s</span></div>
+                <div class="stat-row"><span>Thread frames</span><span class="stat-value" id="stat-thread">0/s</span></div>
                 <div class="stat-row"><span>Wi-Fi probes</span><span class="stat-value" id="stat-wifi">0/s</span></div>
+                <div class="stat-row"><span>AWDL (AirDrop)</span><span class="stat-value" id="stat-awdl">0/s</span></div>
 
                 <h3 style="margin-top: 2rem; margin-bottom: 0.75rem; color: #a1a1aa; font-size: 0.9rem;">Firmware Update (OTA)</h3>
                 <div class="input-group">

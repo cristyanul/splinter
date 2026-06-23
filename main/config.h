@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define SPLINTER_CFG_VERSION  3
+#define SPLINTER_CFG_VERSION  4
 typedef struct {
     uint8_t  version;
 
@@ -26,10 +26,12 @@ typedef struct {
     uint32_t ieee154_chan_mask; // bit c set => use channel c (valid 11..26)
     uint16_t ieee154_beacon_ms; // interval between fake beacons (ms)
     bool     ieee154_respond;   // also answer beacon requests (keeps RX on)
+    bool     thread_enabled;    // also emit a coherent fake Thread/Matter home (needs ieee154_enabled)
 
     // ---- Wi-Fi decoys ----
     bool     wifi_enabled;
     uint16_t wifi_interval_ms;  // pacing between Wi-Fi probe requests (ms)
+    bool     awdl_enabled;      // also emit a coherent Apple AWDL/AirDrop cast (needs wifi_enabled)
 
     // ---- Dynamic Profiles ----
     bool     profiles_enabled;  // dynamic "breathing" density mode

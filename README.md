@@ -17,6 +17,12 @@ It now uses **three radios at once**:
 - **Wi-Fi** — fake 802.11 Probe Requests from a pool of virtual devices, each with a stable
   rotating MAC, a per-vendor IE fingerprint (Apple / Samsung / Intel / generic), and realistic
   channel-weighted scan bursts — so it reads as a crowd of real phones, not one synthetic source.
+- **Apple AWDL / AirDrop** — a *coherent* cast of fake Apple devices emitting AWDL Master
+  Indication Frames that advertise the AirDrop service, so wardrivers (which over-index on Apple)
+  log iPhones/MacBooks "doing AirDrop". Appearance for passive loggers, not protocol participation.
+- **Thread / Matter** — 1–2 *stable* fake Thread "homes", each advertising a named network and
+  generating encrypted-looking mesh chatter, so the space reads as a smart home full of Matter
+  devices — alongside the existing Zigbee PAN churn on the same radio.
 - **Dynamic Profiles** — optional "Breathing" mode that randomly scales decoy density over time to simulate organic crowd movement.
 - **Swarm (ESP-NOW)** — optional coordination so multiple splinters share decoy personas over the air instead of overlapping.
 - **Detection (passive)** — beyond emitting decoys, splinter watches BLE + Wi-Fi for a
@@ -56,6 +62,45 @@ the brief beacon burst, so **BLE performance is unaffected** while both radios r
 > Scope note: this emits Zigbee-style beacon PANs; it does **not** impersonate a real,
 > secured **Thread** network. Thread protects its MLE traffic with the network key, so a
 > fake Thread network would just be ignored by real Thread devices.
+
+## Apple AWDL / AirDrop spoofing (Wi-Fi radio)
+
+On top of the Wi-Fi probe flood, splinter keeps a small **coherent cast** of fake Apple
+devices (stable randomized MACs and hostnames, like a real AirDrop neighbourhood). Each one
+periodically broadcasts an **AWDL Master Indication Frame** on the 2.4 GHz AWDL social channel
+(6) — an Apple vendor-specific 802.11 action frame (OUI `00:17:f2`, type `0x08`) carrying the
+synchronization / channel-sequence / version TLVs a sniffer reads, plus a **Service Response
+TLV advertising `_airdrop._tcp.local`**. To a wardriver or Kismet this logs as iPhones and
+MacBooks actively doing AirDrop — and because wardriving tools heavily prioritise Apple
+devices, it's high-value pollution of their tracking data.
+
+This is **appearance for passive loggers, not protocol participation**: the C6 is 2.4 GHz-only
+(real AWDL also channel-hops into 5 GHz), and the frames are only ever broadcast among
+splinter's own fake MACs. splinter **never** emits the directed unicast service-request that
+would make a bystander's iPhone raise an AirDrop sheet — presence, not pop-ups (the same ethic
+as the excluded BLE Continuity / Swift-Pair / Fast-Pair formats). Frame layout follows the
+SEEMOO "Open Wireless Link" project and the Wireshark `awdl` dissector.
+
+## Thread / Matter mesh simulation (Thread/Zigbee radio)
+
+Beyond the random Zigbee PAN churn, splinter can maintain 1–2 **coherent, stable Thread
+"homes"** on the 802.15.4 radio. Each home has a fixed channel, PAN id, extended PAN id, a
+named network and a handful of member nodes, and emits two kinds of frame, interleaved with
+the Zigbee beacons and transmitted **with CCA**:
+
+- a periodic **Thread-format beacon** (Protocol ID `0x03`, network name, extended PAN id) — the
+  recognisable "this is a Thread/Matter network" advertisement; and
+- **Thread-parametrized secured data frames** (security level 5, key-id mode 1) carrying opaque
+  ciphertext, with occasional broadcasts shaped like MLE advertisements — realistic encrypted
+  mesh chatter among the home's nodes.
+
+To an 802.15.4 / Thread sniffer the space reads as a smart home full of Matter devices that
+persists and evolves slowly, rather than random churn.
+
+> Scope note: same honesty as above — we hold no Thread **network key**, so the mesh payload is
+> *encrypted-looking* (exactly how a real keyless capture appears), not decryptable MLE, and the
+> advertised network has credentials nobody else holds, so a real joiner that tries to join
+> simply fails. **No jamming, ever.**
 
 ## What it deliberately does NOT do (non-intrusive)
 
@@ -204,8 +249,10 @@ that adds a field just uses that field's default while preserving everything els
 | 802.15.4 beacon interval | 100 ms | Time between fake PAN beacons |
 | 802.15.4 answer beacon requests | off | Reply to active scans (keeps RX on) |
 | 802.15.4 channel mask | 11–26 | Channels the beacons hop across |
+| Thread/Matter home | on | Emit a coherent fake Thread/Matter mesh on the 802.15.4 radio (needs 802.15.4 enabled) |
 | Wi-Fi enabled | on | Run the Wi-Fi decoy flood (Probe Requests) |
 | Wi-Fi probe interval | 200 ms | Time between fake Wi-Fi probe requests |
+| Apple AWDL / AirDrop | on | Emit a coherent fake Apple AirDrop cast on the Wi-Fi radio (needs Wi-Fi enabled) |
 | Dynamic Profiles | on | Enable "Breathing mode" to dynamically scale density |
 | SoftAP SSID / password | `Splinter-Setup` / `splinter-setup` | Maintenance Wi-Fi |
 
@@ -221,8 +268,10 @@ within the 31-byte advertising budget).
 | `main/splinter_main.c` | Init, decoy wire-up, BOOT-button web-UI toggle |
 | `main/config.{c,h}` | NVS-backed config + compile-time defaults |
 | `main/decoys_ble.{c,h}` | BLE extended-advertising decoy engine |
-| `main/decoys_154.{c,h}` | 802.15.4 fake Zigbee PAN engine |
-| `main/decoys_wifi.{c,h}` | Wi-Fi 802.11 Probe Request spoofer engine |
+| `main/decoys_154.{c,h}` | 802.15.4 fake Zigbee PAN engine (+ Thread home driver) |
+| `main/decoys_wifi.{c,h}` | Wi-Fi 802.11 Probe Request spoofer engine (+ AWDL cast driver) |
+| `main/decoys_awdl.{c,h}` | Apple AWDL/AirDrop frame builder + coherent cast (pure, host-tested) |
+| `main/decoys_thread.{c,h}` | Thread/Matter frame builders + coherent home (pure, host-tested) |
 | `main/profiles.{c,h}` | Dynamic "Breathing" mode density scalar |
 | `main/swarm.{c,h}` | ESP-NOW swarm transport (shared decoy personas) |
 | `main/maintenance.{c,h}` | Wi-Fi SoftAP + web UI (config + OTA) |

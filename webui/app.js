@@ -19,6 +19,8 @@ document.addEventListener('DOMContentLoaded', () => {
             wifi_enabled: document.getElementById('wifi_enabled').checked,
             profiles_enabled: document.getElementById('profiles_enabled').checked,
             swarm_enabled: document.getElementById('swarm_enabled').checked,
+            thread_enabled: document.getElementById('thread_enabled').checked,
+            awdl_enabled: document.getElementById('awdl_enabled').checked,
             ieee154_respond: document.getElementById('ieee154_respond').checked,
             ble_adv_ms: parseInt(document.getElementById('ble_adv_ms').value),
             ble_name_prob: parseInt(document.getElementById('ble_name_prob').value),
@@ -102,6 +104,8 @@ async function fetchConfig() {
         document.getElementById('wifi_enabled').checked = cfg.wifi_enabled;
         document.getElementById('profiles_enabled').checked = cfg.profiles_enabled;
         document.getElementById('swarm_enabled').checked = cfg.swarm_enabled;
+        document.getElementById('thread_enabled').checked = cfg.thread_enabled;
+        document.getElementById('awdl_enabled').checked = cfg.awdl_enabled;
         document.getElementById('ieee154_respond').checked = cfg.ieee154_respond;
         
         document.getElementById('ble_adv_ms').value = cfg.ble_adv_ms;
@@ -126,7 +130,9 @@ async function fetchStatus() {
         document.getElementById('stat-heap').innerText = (st.free_heap / 1024).toFixed(1) + ' KB';
         document.getElementById('stat-ble').innerText = (st.ble_rate ?? 0) + '/s';
         document.getElementById('stat-154').innerText = (st.ieee154_rate ?? 0) + '/s';
+        document.getElementById('stat-thread').innerText = (st.thread_rate ?? 0) + '/s';
         document.getElementById('stat-wifi').innerText = (st.wifi_rate ?? 0) + '/s';
+        document.getElementById('stat-awdl').innerText = (st.awdl_rate ?? 0) + '/s';
         const badge = document.getElementById('threat-badge');
         const n = st.threats || 0;
         badge.textContent = n;

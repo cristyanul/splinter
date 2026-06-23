@@ -33,9 +33,11 @@ void config_set_defaults(splinter_cfg_t *c)
     c->ieee154_chan_mask = 0x07FFF800u; // channels 11..26 inclusive
     c->ieee154_beacon_ms = 100;
     c->ieee154_respond   = false;       // default off: keeps RX (and radio) light
+    c->thread_enabled    = true;        // coherent fake Thread/Matter home
 
     c->wifi_enabled      = true;
     c->wifi_interval_ms  = 200;
+    c->awdl_enabled      = true;        // coherent Apple AWDL/AirDrop cast
 
     c->profiles_enabled  = true;
     c->swarm_enabled     = false;
@@ -67,9 +69,11 @@ static void config_load_keys(nvs_handle_t h)
     nvs_get_u32(h, "g_mask",   &s_cfg.ieee154_chan_mask);
     nvs_get_u16(h, "g_beac",   &s_cfg.ieee154_beacon_ms);
     load_bool  (h, "g_resp",   &s_cfg.ieee154_respond);
+    load_bool  (h, "thr_en",   &s_cfg.thread_enabled);
 
     load_bool  (h, "wifi_en",  &s_cfg.wifi_enabled);
     nvs_get_u16(h, "wifi_int", &s_cfg.wifi_interval_ms);
+    load_bool  (h, "awdl_en",  &s_cfg.awdl_enabled);
 
     load_bool  (h, "prof_en",  &s_cfg.profiles_enabled);
     load_bool  (h, "swarm_en", &s_cfg.swarm_enabled);
@@ -143,8 +147,10 @@ esp_err_t config_save(void)
     nvs_set_u32(h, "g_mask",   s_cfg.ieee154_chan_mask);
     nvs_set_u16(h, "g_beac",   s_cfg.ieee154_beacon_ms);
     nvs_set_u8 (h, "g_resp",   s_cfg.ieee154_respond);
+    nvs_set_u8 (h, "thr_en",   s_cfg.thread_enabled);
     nvs_set_u8 (h, "wifi_en",  s_cfg.wifi_enabled);
     nvs_set_u16(h, "wifi_int", s_cfg.wifi_interval_ms);
+    nvs_set_u8 (h, "awdl_en",  s_cfg.awdl_enabled);
     nvs_set_u8 (h, "prof_en",  s_cfg.profiles_enabled);
     nvs_set_u8 (h, "swarm_en", s_cfg.swarm_enabled);
     nvs_set_u8 (h, "det_en",   s_cfg.detect_enabled);

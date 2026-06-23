@@ -6,6 +6,8 @@ idf_component_register(
         "decoys_ble.c"
         "decoys_154.c"
         "decoys_wifi.c"
+        "decoys_awdl.c"
+        "decoys_thread.c"
         "profiles.c"
         "maintenance.c"
         "swarm.c"

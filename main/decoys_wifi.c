@@ -14,6 +14,7 @@
 // device seen from several vantage points.
 
 #include "decoys_wifi.h"
+#include "decoys_awdl.h"
 #include "swarm.h"
 #include "profiles.h"
 #include <string.h>
@@ -28,10 +29,31 @@
 
 static const char *TAG = "splinter-wifi";
 static volatile uint32_t s_rate = 0;
+static volatile uint32_t s_awdl_rate = 0;     // last-second AWDL MIFs/s
 static volatile bool s_paused = false;   // held true during a Wi-Fi mode switch
 
 uint32_t decoys_wifi_rate(void) { return s_rate; }
+uint32_t decoys_wifi_awdl_rate(void) { return s_awdl_rate; }
 void decoys_wifi_set_paused(bool paused) { s_paused = paused; }
+
+// ----------------------------------------------------------- AWDL cast
+// A coherent cast of fake Apple devices. Each emits a broadcast Master
+// Indication Frame (advertising AirDrop) on the 2.4 GHz AWDL social channel (6)
+// about once per second; the cast is staggered so one MIF goes out every
+// AWDL_PERIOD_MS / AWDL_CAST_SIZE. Driven from task_wifi because it owns the
+// radio (same reason the swarm rendezvous lives here).
+#define AWDL_SOCIAL_CHANNEL 6
+#define AWDL_PERIOD_MS      1000
+static awdl_device_t s_awdl_cast[AWDL_CAST_SIZE];
+static bool          s_awdl_ready = false;
+
+static void awdl_ensure_cast(void) {
+    if (s_awdl_ready) return;
+    uint8_t ent[32];
+    for (int i = 0; i < (int)sizeof(ent); i++) ent[i] = (uint8_t)(esp_random() & 0xff);
+    awdl_cast_init(s_awdl_cast, AWDL_CAST_SIZE, ent, sizeof(ent));
+    s_awdl_ready = true;
+}
 
 // Swarm rendezvous: how often to park on SWARM_CHANNEL to exchange personas,
 // and how long to dwell there listening for peers each time.
@@ -216,6 +238,9 @@ static void task_wifi(void *arg) {
     uint32_t sent = 0;
     uint32_t last_rendezvous = 0;
     uint32_t rr = 0; // round-robin cursor over the device pool
+    uint32_t last_awdl = 0;     // last AWDL MIF emission (ms)
+    uint32_t awdl_cursor = 0;   // round-robin over the AWDL cast
+    uint32_t awdl_sent = 0;     // AWDL MIFs sent this second
 
     for (;;) {
         const splinter_cfg_t *cfg = config_get();
@@ -260,6 +285,24 @@ static void task_wifi(void *arg) {
 
                 vTaskDelay(pdMS_TO_TICKS(SWARM_DWELL_MS)); // catch peers' broadcasts
                 last_rendezvous = now;
+            }
+        }
+
+        // ---- Apple AWDL (AirDrop) cast ----
+        // Park on the AWDL social channel and emit one cast member's broadcast
+        // Master Indication Frame. Skipped while the maintenance AP pins channel 1.
+        if (cfg->awdl_enabled && !ap_active) {
+            awdl_ensure_cast();
+            if (now - last_awdl >= AWDL_PERIOD_MS / AWDL_CAST_SIZE) {
+                awdl_device_t *d = &s_awdl_cast[awdl_cursor++ % AWDL_CAST_SIZE];
+                esp_wifi_set_channel(AWDL_SOCIAL_CHANNEL, WIFI_SECOND_CHAN_NONE);
+                uint32_t ts = now * 1000;   // monotonic-ish timestamp (us-ish)
+                int alen = awdl_build_mif(frame, d, s_awdl_cast[0].mac, ts, ts + 2000);
+                if (alen > 0 && esp_wifi_80211_tx(WIFI_IF_STA, frame, alen, true) == ESP_OK) {
+                    awdl_sent++;
+                }
+                d->aw_seq++;
+                last_awdl = now;
             }
         }
 
@@ -319,8 +362,11 @@ static void task_wifi(void *arg) {
 
         if (now - t0 >= 1000) {
             s_rate = sent;
-            ESP_LOGW(TAG, "Wi-Fi: %lu fake probe requests/sec on-air", (unsigned long)sent);
+            s_awdl_rate = awdl_sent;
+            ESP_LOGW(TAG, "Wi-Fi: %lu probe requests/sec + %lu AWDL MIFs/sec on-air",
+                     (unsigned long)sent, (unsigned long)awdl_sent);
             sent = 0;
+            awdl_sent = 0;
             t0 = now;
         }
 
