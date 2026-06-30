@@ -42,7 +42,8 @@ void config_set_defaults(splinter_cfg_t *c)
     c->profiles_enabled  = true;
     c->swarm_enabled     = false;
 
-    c->detect_enabled    = true;
+    c->detect_enabled     = true;
+    c->jam_detect_enabled = true;
 
     strncpy(c->softap_ssid, "Splinter-Setup",  sizeof(c->softap_ssid) - 1);
     strncpy(c->softap_pass, "splinter-setup",  sizeof(c->softap_pass) - 1);
@@ -78,6 +79,7 @@ static void config_load_keys(nvs_handle_t h)
     load_bool  (h, "prof_en",  &s_cfg.profiles_enabled);
     load_bool  (h, "swarm_en", &s_cfg.swarm_enabled);
     load_bool  (h, "det_en",   &s_cfg.detect_enabled);
+    load_bool  (h, "jam_en",   &s_cfg.jam_detect_enabled);
 
     size_t n;
     n = sizeof(s_cfg.softap_ssid);
@@ -154,6 +156,7 @@ esp_err_t config_save(void)
     nvs_set_u8 (h, "prof_en",  s_cfg.profiles_enabled);
     nvs_set_u8 (h, "swarm_en", s_cfg.swarm_enabled);
     nvs_set_u8 (h, "det_en",   s_cfg.detect_enabled);
+    nvs_set_u8 (h, "jam_en",   s_cfg.jam_detect_enabled);
     nvs_set_str(h, "ssid",     s_cfg.softap_ssid);
     nvs_set_str(h, "pass",     s_cfg.softap_pass);
 

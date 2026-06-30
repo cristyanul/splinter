@@ -24,6 +24,7 @@
 #include "config.h"
 #include "profiles.h"
 #include "decoys_thread.h"
+#include "jam_core.h"
 
 static const char *TAG = "splinter-154";
 
@@ -33,6 +34,15 @@ static volatile uint32_t s_zig_sub = 0;    // Zigbee beacons submitted (this sec
 static volatile uint32_t s_thr_sub = 0;    // Thread frames submitted (this second)
 static volatile uint32_t s_rate = 0;       // last-second Zigbee beacons/s
 static volatile uint32_t s_thread_rate = 0;// last-second Thread frames/s
+
+static volatile int8_t   s_ed_power;     // last ED reading (dBm)
+static volatile uint8_t  s_ed_chan;      // channel of last ED reading
+static volatile uint8_t  s_ed_fresh;     // 1 if a fresh ED result since last drain
+// Per-interval TX-health for the jam detector. Incremented alongside s_skip/s_done,
+// reset ONLY by decoys_154_drain_ed (NOT by the task's 1-second log reset) so the
+// drain sees a clean interval regardless of the log cadence.
+static volatile uint16_t s_cca_busy_iv;  // CCA-busy / TX-skip events since last drain
+static volatile uint16_t s_tx_done_iv;   // TX-confirmed events since last drain
 
 // Coherent fake Thread/Matter home(s). Initialized lazily once the radio is up
 // and persisted thereafter, so the "home" stays the same place across toggles.
@@ -48,12 +58,20 @@ void esp_ieee802154_transmit_done(const uint8_t *frame, const uint8_t *ack,
                                   esp_ieee802154_frame_info_t *ack_frame_info)
 {
     s_done++;
+    if (s_tx_done_iv < 0xFFFF) s_tx_done_iv++;
 }
 
 void esp_ieee802154_transmit_failed(const uint8_t *frame, esp_ieee802154_tx_error_t error)
 {
     // CCA-busy etc. — drop this beacon; the next picks another channel.
     s_skip++;
+    if (s_cca_busy_iv < 0xFFFF) s_cca_busy_iv++;
+}
+
+void esp_ieee802154_energy_detect_done(int8_t power)
+{
+    s_ed_power = power;
+    s_ed_fresh = 1;
 }
 
 static uint8_t pick_channel(uint32_t mask)
@@ -201,7 +219,7 @@ static void task_154(void *arg)
                                           home->frame_counter++, pl, plen);
                 }
                 if (n > 0 && esp_ieee802154_transmit(frame, true) == ESP_OK) s_thr_sub++;
-                else s_skip++;
+                else { s_skip++; if (s_cca_busy_iv < 0xFFFF) s_cca_busy_iv++; }
                 sent_thread = true;
             }
         }
@@ -212,7 +230,7 @@ static void task_154(void *arg)
             esp_ieee802154_set_channel(last_ch);
             build_beacon(frame, seq++);
             if (esp_ieee802154_transmit(frame, true /* CCA: stay polite */) == ESP_OK) s_zig_sub++;
-            else s_skip++;
+            else { s_skip++; if (s_cca_busy_iv < 0xFFFF) s_cca_busy_iv++; }
         }
         step++;
 
@@ -220,9 +238,10 @@ static void task_154(void *arg)
         if (now - t0 >= 1000) {
             s_rate = s_zig_sub;
             s_thread_rate = s_thr_sub;
-            ESP_LOGW(TAG, "154: %lu Zigbee + %lu Thread frames/sec on-air (%lu skipped, %lu cfm) last_ch=%u",
+            ESP_LOGW(TAG, "154: %lu Zigbee + %lu Thread frames/sec on-air (%lu skipped, %lu cfm) last_ch=%u ED=%ddBm@ch%u",
                      (unsigned long)s_zig_sub, (unsigned long)s_thr_sub,
-                     (unsigned long)s_skip, (unsigned long)s_done, last_ch);
+                     (unsigned long)s_skip, (unsigned long)s_done, last_ch,
+                     (int)s_ed_power, s_ed_chan);
             s_zig_sub = 0;
             s_thr_sub = 0;
             s_done = 0;
@@ -233,6 +252,27 @@ static void task_154(void *arg)
         // Base inter-beacon delay, modulated by the breathing density multiplier.
         uint32_t d = profiles_scale_interval(cfg->ieee154_beacon_ms, 10);
         vTaskDelay(pdMS_TO_TICKS(d));
+
+        // Passive jam sensing: occasional Energy-Detect dwell on the channel we just
+        // beaconed on. Issued HERE — after the inter-beacon delay — so the radio is
+        // idle (this iteration's async TX has completed during the delay) and ED is
+        // not rejected for a busy radio. ~1/sec normally; ~4/sec while the Wi-Fi side
+        // reports a trip, to cross-confirm. Only advance the timer when ED actually
+        // started, then settle briefly so ED finishes before the next iteration's TX.
+        if (cfg->jam_detect_enabled && last_ch) {
+            extern bool jam_detect_wifi_trip(void);   // defined in jam_detect.c
+            static uint32_t s_ed_last = 0;
+            uint32_t nowt = esp_log_timestamp();
+            uint32_t period = jam_detect_wifi_trip() ? 250u : 1000u;
+            if (nowt - s_ed_last >= period) {
+                esp_ieee802154_set_channel(last_ch);
+                if (esp_ieee802154_energy_detect(128) == ESP_OK) {  // async; result via callback
+                    s_ed_chan = last_ch;
+                    s_ed_last = nowt;
+                    vTaskDelay(pdMS_TO_TICKS(3));   // let the ~2 ms ED complete before next TX
+                }
+            }
+        }
     }
 }
 
@@ -240,4 +280,16 @@ void decoys_154_start(void)
 {
     // Priority 4: below the BLE decoy task (5) so BLE always wins CPU contention.
     xTaskCreate(task_154, "splinter154", 4096, NULL, 4, NULL);
+}
+
+void decoys_154_drain_ed(jam_ed_sample_t *out)
+{
+    out->channel  = s_ed_chan;
+    out->energy   = s_ed_power;
+    out->ed_valid = s_ed_fresh;
+    out->cca_busy = s_cca_busy_iv;
+    out->tx_done  = s_tx_done_iv;
+    s_ed_fresh = 0;
+    s_cca_busy_iv = 0;
+    s_tx_done_iv = 0;
 }

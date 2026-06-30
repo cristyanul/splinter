@@ -12,6 +12,7 @@ typedef enum {
     LED_STATE_OTA,         // solid amber — OTA in progress
     LED_STATE_ERROR,       // solid red — init / OTA failure
     LED_STATE_ALERT,       // pulsing red/purple — follower detected
+    LED_STATE_JAM,         // rapid red double-blink — active RF jamming detected
 } led_state_t;
 
 void status_led_init(void);

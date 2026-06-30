@@ -1,5 +1,6 @@
 #include "sniff_ble.h"
 #include "detector.h"
+#include "tracker_id.h"
 #include "config.h"
 #include "esp_log.h"
 #include "host/ble_gap.h"
@@ -7,31 +8,6 @@
 #include <string.h>
 
 static const char *TAG = "splinter-snble";
-
-// Classify an advertisement payload into a tracker kind.
-static uint8_t classify(const uint8_t *data, uint8_t len)
-{
-    // Walk AD structures: [len][type][data...]
-    for (int i = 0; i + 1 < len; ) {
-        uint8_t l = data[i];
-        if (l == 0 || i + 1 + l > len) break;
-        uint8_t t = data[i + 1];
-        const uint8_t *v = &data[i + 2];
-        int vl = l - 1;
-        if (t == 0xFF && vl >= 2) { // Manufacturer Specific Data
-            uint16_t company = (uint16_t)(v[0] | (v[1] << 8));
-            if (company == 0x004C && vl >= 3 && v[2] == 0x12) return DC_TRK_APPLE_FINDMY; // Apple Find My
-            if (company == 0x0075) return DC_TRK_SAMSUNG;  // Samsung
-        }
-        if (t == 0x16 && vl >= 2) { // Service Data - 16-bit UUID
-            uint16_t uuid = (uint16_t)(v[0] | (v[1] << 8));
-            if (uuid == 0xFEED) return DC_TRK_TILE;        // Tile
-            if (uuid == 0xFD5A) return DC_TRK_SAMSUNG;     // Samsung SmartTag
-        }
-        i += 1 + l;
-    }
-    return DC_TRK_NONE;
-}
 
 static uint16_t ble_fp(const uint8_t *data, uint8_t len)
 {
@@ -66,7 +42,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     s.rssi = rssi;
     s.channel = 37;
     if (len > 0 && data) {
-        s.tracker_kind = classify(data, len);
+        s.tracker_kind = tracker_classify(data, len);
         s.fp = ble_fp(data, len);
     }
     detector_report_sighting(&s);

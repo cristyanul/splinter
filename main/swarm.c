@@ -10,7 +10,8 @@
 #include <stddef.h>
 
 static const char *TAG = "splinter-swarm";
-static QueueHandle_t s_swarm_queue = NULL;
+static QueueHandle_t s_swarm_queue = NULL;   // personas (decoy sharing)
+static QueueHandle_t s_threat_queue = NULL;  // peer threat reports
 static const uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 // Shared fleet secret. CHANGE THIS to a unique 16-byte value per deployment so
@@ -22,17 +23,17 @@ static const uint8_t SWARM_KEY[16] = {
     0x2d, 0x53, 0x77, 0x61, 0x72, 0x6d, 0x21, 0x5f,
 };
 
-// Truncated HMAC-SHA256 over the persona's authenticated region (everything
-// before the auth field). Both ends compute over the full fixed-size struct
-// prefix, so it is deterministic as long as senders zero-initialize.
-static void swarm_auth(const swarm_persona_t *p, uint8_t out[8])
+// Truncated HMAC-SHA256 over a message's authenticated region (everything before
+// its trailing auth field — pass auth_off = offsetof(struct, auth)). Both ends
+// compute over the same fixed-size prefix, so it is deterministic as long as
+// senders zero-initialize. Works for any swarm message type.
+static void swarm_hmac(const void *msg, size_t auth_off, uint8_t out[8])
 {
     uint8_t full[32];
     const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
     if (info == NULL ||
         mbedtls_md_hmac(info, SWARM_KEY, sizeof(SWARM_KEY),
-                        (const uint8_t *)p, offsetof(swarm_persona_t, auth),
-                        full) != 0) {
+                        (const uint8_t *)msg, auth_off, full) != 0) {
         memset(out, 0, 8);
         return;
     }
@@ -47,25 +48,36 @@ static void swarm_recv_cb(const esp_now_recv_info_t *recv_info, const uint8_t *d
     if (!config_get()->swarm_enabled) {
         return;
     }
-    if (len != (int)sizeof(swarm_persona_t)) {
+    if (len < 5) {
+        return; // too short to carry the common magic+type header
+    }
+
+    // Both message types share a {magic(4), type(1)} header; dispatch on it.
+    uint32_t magic;
+    memcpy(&magic, data, sizeof(magic));
+    if (magic != SWARM_PROTO_MAGIC) {
         return;
     }
+    uint8_t type = data[4];
 
-    swarm_persona_t persona;
-    memcpy(&persona, data, sizeof(persona));
-
-    if (persona.magic != SWARM_PROTO_MAGIC || persona.type != SWARM_MSG_WIFI_PROBE) {
-        return;
-    }
-
-    uint8_t expect[8];
-    swarm_auth(&persona, expect);
-    if (memcmp(expect, persona.auth, sizeof(expect)) != 0) {
-        return; // spoofed or corrupted — reject
-    }
-
-    if (s_swarm_queue) {
-        xQueueSend(s_swarm_queue, &persona, 0);
+    if (type == SWARM_MSG_WIFI_PROBE && len == (int)sizeof(swarm_persona_t)) {
+        swarm_persona_t persona;
+        memcpy(&persona, data, sizeof(persona));
+        uint8_t expect[8];
+        swarm_hmac(&persona, offsetof(swarm_persona_t, auth), expect);
+        if (memcmp(expect, persona.auth, 8) != 0) {
+            return; // spoofed or corrupted — reject
+        }
+        if (s_swarm_queue) xQueueSend(s_swarm_queue, &persona, 0);
+    } else if (type == SWARM_MSG_THREAT && len == (int)sizeof(swarm_threat_t)) {
+        swarm_threat_t threat;
+        memcpy(&threat, data, sizeof(threat));
+        uint8_t expect[8];
+        swarm_hmac(&threat, offsetof(swarm_threat_t, auth), expect);
+        if (memcmp(expect, threat.auth, 8) != 0) {
+            return;
+        }
+        if (s_threat_queue) xQueueSend(s_threat_queue, &threat, 0);
     }
 }
 
@@ -80,7 +92,8 @@ void swarm_init(void)
     }
 
     s_swarm_queue = xQueueCreate(20, sizeof(swarm_persona_t));
-    if (!s_swarm_queue) {
+    s_threat_queue = xQueueCreate(10, sizeof(swarm_threat_t));
+    if (!s_swarm_queue || !s_threat_queue) {
         ESP_LOGE(TAG, "swarm queue alloc failed");
         return;
     }
@@ -113,7 +126,7 @@ void swarm_broadcast_persona(swarm_persona_t *persona)
     }
 
     persona->magic = SWARM_PROTO_MAGIC;
-    swarm_auth(persona, persona->auth);
+    swarm_hmac(persona, offsetof(swarm_persona_t, auth), persona->auth);
 
     esp_err_t err = esp_now_send(broadcast_mac, (const uint8_t *)persona, sizeof(*persona));
     if (err != ESP_OK) {
@@ -126,4 +139,25 @@ bool swarm_receive_persona(swarm_persona_t *out_persona)
 {
     if (!s_swarm_queue) return false;
     return xQueueReceive(s_swarm_queue, out_persona, 0) == pdTRUE;
+}
+
+void swarm_broadcast_threat(swarm_threat_t *threat)
+{
+    if (!config_get()->swarm_enabled) {
+        return;
+    }
+    threat->magic = SWARM_PROTO_MAGIC;
+    threat->type  = SWARM_MSG_THREAT;
+    swarm_hmac(threat, offsetof(swarm_threat_t, auth), threat->auth);
+
+    esp_err_t err = esp_now_send(broadcast_mac, (const uint8_t *)threat, sizeof(*threat));
+    if (err != ESP_OK) {
+        ESP_LOGD(TAG, "Swarm threat broadcast failed: %d", err);
+    }
+}
+
+bool swarm_receive_threat(swarm_threat_t *out_threat)
+{
+    if (!s_threat_queue) return false;
+    return xQueueReceive(s_threat_queue, out_threat, 0) == pdTRUE;
 }

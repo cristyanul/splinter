@@ -39,6 +39,7 @@ typedef struct {
 
     // ---- Follower detection ----
     bool     detect_enabled;    // passive BLE+Wi-Fi tail detection
+    bool     jam_detect_enabled; // passive RF-jamming detection
 
     // ---- SoftAP (maintenance mode) ----
     char     softap_ssid[33];

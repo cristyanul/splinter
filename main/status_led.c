@@ -47,6 +47,16 @@ static void led_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(30));
             break;
         }
+        case LED_STATE_JAM: {
+            // Rapid red double-blink: two short red pulses then a longer dark
+            // pause — clearly distinct from the slow red/purple sweep of ALERT.
+            // 20 steps × 50 ms = 1 s cycle; pulses at steps 0-2 and 5-7.
+            phase = (phase + 1) % 20;
+            bool on = (phase < 3) || (phase >= 5 && phase < 8);
+            set_rgb(on ? 220 : 0, 0, 0);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            break;
+        }
         case LED_STATE_MAINTENANCE: set_rgb(0,  0, 20); vTaskDelay(pdMS_TO_TICKS(250)); break;
         case LED_STATE_OTA:         set_rgb(22, 13, 0); vTaskDelay(pdMS_TO_TICKS(120)); break;
         case LED_STATE_ERROR:       set_rgb(22, 0,  0); vTaskDelay(pdMS_TO_TICKS(300)); break;

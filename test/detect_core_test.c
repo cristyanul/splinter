@@ -14,6 +14,17 @@ static dc_sighting_t mk(uint8_t last, int8_t rssi, dc_radio_t r) {
     return s;
 }
 
+// A Find My (separated tracker) BLE sighting with the given MAC tail.
+static dc_sighting_t mk_fm(uint8_t last, int8_t rssi) {
+    dc_sighting_t s = {0};
+    s.radio = DC_RADIO_BLE; s.rssi = rssi; s.channel = 37;
+    uint8_t base[6] = {0x0A, 0xFF, 0x00, 0x00, 0x00, last};
+    memcpy(s.id, base, 6);
+    s.tracker_kind = DC_TRK_APPLE_FINDMY;
+    s.fp = 0x1234;
+    return s;
+}
+
 // Drive `dev` through `n` scene changes so scenes_survived == n. Each round
 // swaps in two fresh close decoys and drops the previous pair, turning the
 // close-set over >50% (a scene change) while `dev` stays present in both
@@ -167,12 +178,112 @@ static void test_radar_and_allowlist(void) {
     CHECK(na == 2);                                          // both trusted MACs (present + absent)
 }
 
+// One scene: ingest the provided Find My MACs (all close) plus two fresh churn
+// decoys to force a scene change, then tick. `fm_tail`/`nfm` give the tracker MACs.
+static void kind_scene(dc_state_t *s, uint32_t *t, const uint8_t *fm_tail, int nfm, int round) {
+    *t += 1000;
+    for (int j = 0; j < nfm; j++) { dc_sighting_t f = mk_fm(fm_tail[j], -50); dc_ingest(s, &f, *t); }
+    dc_sighting_t c = mk((uint8_t)(0x82 + 2 * round), -50, DC_RADIO_WIFI); dc_ingest(s, &c, *t);
+    dc_sighting_t d = mk((uint8_t)(0x83 + 2 * round), -50, DC_RADIO_WIFI); dc_ingest(s, &d, *t);
+    dc_scene_tick(s, *t + 900);
+}
+
+// Baseline-aware kind detection: your own tracker is learned and NOT flagged; a
+// second, unexplained tracker of the same kind IS flagged.
+static void test_kind_baseline_owner_aware(void) {
+    dc_state_t s; dc_init(&s);
+    s.scene_ms = 1000; s.persist_scenes = 3;
+    dc_begin_safe(&s, 0, 4000);                 // learn window covers the baseline scenes
+
+    uint32_t t = 100;
+    dc_sighting_t fm = mk_fm(0x01, -50); dc_ingest(&s, &fm, t);     // your AirTag
+    dc_sighting_t a = mk(0x80, -50, DC_RADIO_WIFI); dc_ingest(&s, &a, t);
+    dc_sighting_t b = mk(0x81, -50, DC_RADIO_WIFI); dc_ingest(&s, &b, t);
+    dc_scene_tick(&s, t + 900);                 // baseline tick inside safe window
+    CHECK(s.kind_baseline[DC_TRK_APPLE_FINDMY] == 1);
+
+    // Only your tracker stays close across moves -> count == baseline -> NOT flagged.
+    uint8_t one[1] = {0x01};
+    for (int i = 0; i < 4; i++) kind_scene(&s, &t, one, 1, i);
+    dc_score(&s, t);
+    CHECK(!s.kind_flag[DC_TRK_APPLE_FINDMY]);
+
+    // A second, unexplained tracker appears and stays close (past the safe window,
+    // so the baseline does not grow) -> count 2 > baseline 1, persists -> flagged.
+    uint8_t two[2] = {0x01, 0x02};
+    for (int i = 0; i < 4; i++) kind_scene(&s, &t, two, 2, i + 8);
+    dc_score(&s, t);
+    CHECK(s.kind_flag[DC_TRK_APPLE_FINDMY]);
+
+    dc_kind_alert_t ka[DC_TRK_COUNT];
+    int nk = dc_kind_alerts(&s, ka, DC_TRK_COUNT);
+    CHECK(nk == 1);
+    CHECK(ka[0].kind == DC_TRK_APPLE_FINDMY);
+    CHECK(ka[0].baseline == 1);
+    CHECK(ka[0].present == 2);
+}
+
+// The whole point: a tracker that rotates its MAC every scene is still caught at
+// the kind level, even though NO single MAC ever accrues per-MAC persistence.
+static void test_kind_survives_mac_rotation(void) {
+    dc_state_t s; dc_init(&s);
+    s.scene_ms = 1000; s.persist_scenes = 3;    // no safe window -> baseline stays 0
+
+    uint32_t t = 100;
+    dc_sighting_t fm0 = mk_fm(0x10, -50); dc_ingest(&s, &fm0, t);
+    dc_sighting_t a = mk(0x80, -50, DC_RADIO_WIFI); dc_ingest(&s, &a, t);
+    dc_sighting_t b = mk(0x81, -50, DC_RADIO_WIFI); dc_ingest(&s, &b, t);
+    dc_scene_tick(&s, t + 900);
+
+    for (int i = 0; i < 4; i++) {
+        uint8_t rot[1] = { (uint8_t)(0x20 + i) };   // a different MAC every scene
+        kind_scene(&s, &t, rot, 1, i);
+    }
+    dc_score(&s, t);
+    CHECK(s.kind_flag[DC_TRK_APPLE_FINDMY]);         // kind caught despite rotation
+
+    // ...and prove per-MAC persistence would have missed it: no rotated MAC ever
+    // survived enough scenes on its own.
+    uint8_t last_id[6] = {0x0A, 0xFF, 0x00, 0x00, 0x00, 0x23};
+    dc_dev_t *last = dc_find(&s, last_id);
+    CHECK(last == NULL || last->scenes_survived < s.persist_scenes);
+}
+
+// A swarm peer's threat report corroborates a locally-seen device immediately,
+// shows unmatched peers on the radar, and expires after the TTL.
+static void test_peer_corroboration(void) {
+    dc_state_t s; dc_init(&s);
+    dc_sighting_t f = mk(0x55, -55, DC_RADIO_WIFI);
+    dc_ingest(&s, &f, 1000);
+    dc_score(&s, 1000);
+    CHECK(!(dc_find(&s, f.id)->flags & DC_F_THREAT));    // not yet persistent on its own
+
+    dc_ingest_peer(&s, f.id, DC_TRK_NONE, 0, -55, 1000); // a peer flags this exact id
+    dc_score(&s, 1000);
+    CHECK(dc_find(&s, f.id)->flags & DC_F_THREAT);        // corroborated -> confirmed
+
+    uint8_t other[6] = {0xAB, 0, 0, 0, 0, 0x01};         // a peer threat we don't see locally
+    dc_ingest_peer(&s, other, DC_TRK_APPLE_FINDMY, 0x1234, -60, 1000);
+    dc_score(&s, 1000);
+    dc_radar_t r[8];
+    int nr = dc_radar(&s, r, 8), peercat = 0;
+    for (int i = 0; i < nr; i++) if (r[i].category == DC_CAT_PEER) peercat++;
+    CHECK(peercat == 1);                                  // unmatched peer shown as its own category
+
+    dc_score(&s, 1000 + s.peer_ttl_ms + 1);              // peer reports expire
+    CHECK(!(dc_find(&s, f.id)->flags & DC_F_THREAT));    // no longer corroborated
+    CHECK(s.npeer == 0);
+}
+
 int main(void) {
     test_ingest_adds_and_updates();
     test_scene_survival();
     test_scoring();
     test_safe_window_autolearn();
     test_radar_and_allowlist();
+    test_kind_baseline_owner_aware();
+    test_kind_survives_mac_rotation();
+    test_peer_corroboration();
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("OK\n"); return 0;
 }

@@ -30,6 +30,7 @@
 #include "profiles.h"
 #include "swarm.h"
 #include "detector.h"
+#include "jam_detect.h"
 #include "sniff_wifi.h"
 #include "maintenance.h"
 static const char *TAG = "splinter";
@@ -117,6 +118,7 @@ void app_main(void)
     decoys_wifi_start();
     profiles_start();
     detector_start();
+    jam_detect_start();
     sniff_wifi_start();
     status_led_set(LED_STATE_RUNNING);
 
@@ -135,11 +137,13 @@ void app_main(void)
                 status_led_set(LED_STATE_RUNNING);
             }
         }
-        if (!ui_active && config_get()->detect_enabled) {
-            bool threat = detector_threat_count() > 0;
-            status_led_set(threat ? LED_STATE_ALERT : LED_STATE_RUNNING);
-        } else if (!ui_active) {
-            status_led_set(LED_STATE_RUNNING);
+        if (!ui_active) {
+            const splinter_cfg_t *c = config_get();
+            led_state_t st = LED_STATE_RUNNING;
+            // Jam (active spectrum attack) takes visual priority over a follower alert.
+            if (c->jam_detect_enabled && jam_detect_alert())   st = LED_STATE_JAM;
+            else if (c->detect_enabled && detector_alert())    st = LED_STATE_ALERT;
+            status_led_set(st);
         }
         vTaskDelay(pdMS_TO_TICKS(50));
     }

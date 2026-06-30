@@ -3,6 +3,11 @@ document.addEventListener('DOMContentLoaded', () => {
     setInterval(fetchStatus, 2000);
     setInterval(fetchRadar, 2000);
     fetchRadar();
+    setInterval(fetchThreatLog, 5000);
+    fetchThreatLog();
+    setInterval(fetchJamLog, 5000);
+    fetchJamLog();
+    document.getElementById('btn-log-csv').addEventListener('click', downloadLogCsv);
     document.getElementById('btn-safe').addEventListener('click', async (e) => {
         const b = e.target;
         await fetch('/api/safe', { method: 'POST' });
@@ -21,6 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
             swarm_enabled: document.getElementById('swarm_enabled').checked,
             thread_enabled: document.getElementById('thread_enabled').checked,
             awdl_enabled: document.getElementById('awdl_enabled').checked,
+            jam_detect_enabled: document.getElementById('jam_detect_enabled').checked,
             ieee154_respond: document.getElementById('ieee154_respond').checked,
             ble_adv_ms: parseInt(document.getElementById('ble_adv_ms').value),
             ble_name_prob: parseInt(document.getElementById('ble_name_prob').value),
@@ -107,7 +113,8 @@ async function fetchConfig() {
         document.getElementById('thread_enabled').checked = cfg.thread_enabled;
         document.getElementById('awdl_enabled').checked = cfg.awdl_enabled;
         document.getElementById('ieee154_respond').checked = cfg.ieee154_respond;
-        
+        document.getElementById('jam_detect_enabled').checked = cfg.jam_detect_enabled;
+
         document.getElementById('ble_adv_ms').value = cfg.ble_adv_ms;
         document.getElementById('ble_name_prob').value = cfg.ble_name_prob;
         document.getElementById('ble_mfg_prob').value = cfg.ble_mfg_prob;
@@ -137,6 +144,24 @@ async function fetchStatus() {
         const n = st.threats || 0;
         badge.textContent = n;
         badge.className = n > 0 ? 'badge-alert' : 'badge-zero';
+        const jamEl = document.getElementById('jam-status');
+        if (jamEl) {
+            if (st.jam_active) {
+                // band 1 = Wi-Fi MGMT flood (protocol-specific); band 2 = the ED energy
+                // meter, which sees ANY 2.4 GHz carrier (BT / Wi-Fi / Zigbee) — so it's
+                // labelled generically rather than "802.15.4".
+                const bandName = st.jam_band === 3 ? 'Wi-Fi + 2.4 GHz RF' : st.jam_band === 2 ? '2.4 GHz RF' : 'Wi-Fi';
+                // the 2.4 GHz RF (ED energy) band reports dBm; a Wi-Fi attack reports a frame-flood rate.
+                const intensity = [];
+                if (st.jam_band & 2) intensity.push((st.jam_peak ?? '?') + ' dBm');
+                if (st.jam_band & 1) intensity.push((st.jam_rate ?? 0) + '/s');
+                jamEl.textContent = 'JAMMED · ' + bandName + ' · ' + intensity.join(' · ') + ' · ' + (st.jam_dur ?? 0) + 's';
+                jamEl.className = 'jam-status-alert';
+            } else {
+                jamEl.textContent = 'Clear';
+                jamEl.className = 'jam-status-clear';
+            }
+        }
         document.getElementById('conn-status').className = 'status-badge';
         document.getElementById('conn-status').innerText = 'Connected';
     } catch (e) {
@@ -202,7 +227,8 @@ function drawRadar(devices) {
         b._dev = d;
         b.setAttribute('cx', cx);
         b.setAttribute('cy', cy);
-        b.setAttribute('class', 'blip ' + (d.cat === 'threat' ? 'blip-threat' : 'blip-trusted'));
+        b.setAttribute('class', 'blip ' +
+            (d.cat === 'threat' ? 'blip-threat' : d.cat === 'peer' ? 'blip-peer' : 'blip-trusted'));
         b.firstChild.textContent = fmtMac(d.id) + ' · ' + d.rssi + ' dBm';
     });
     // Drop blips for devices that are no longer present.
@@ -210,15 +236,17 @@ function drawRadar(devices) {
 }
 function showBlip(d) {
     const el = document.getElementById('blip-detail');
-    const isThreat = d.cat === 'threat';
+    const isPeer = d.cat === 'peer';
+    const isThreat = d.cat === 'threat' || isPeer;
     el.style.display = 'block';
     el.innerHTML = '<div class="bd-mac">' + fmtMac(d.id) + '</div>' +
         '<div class="bd-meta">' + d.rssi + ' dBm · ' + d.kind + ' · ' + d.radio.toUpperCase() +
-        (isThreat ? ' · ' + d.minutes + ' min · ' + d.scenes + ' scenes' : '') + '</div>';
+        (isPeer ? ' · reported by another node' :
+         d.cat === 'threat' ? ' · ' + d.minutes + ' min · ' + d.scenes + ' scenes' : '') + '</div>';
     const btn = document.createElement('button');
     btn.className = 'btn' + (isThreat ? ' danger' : '');
     btn.textContent = isThreat ? 'Trust (ignore)' : 'Untrust';
-    btn.onclick = () => setAllow(d.id, isThreat);   // threat -> on:true (trust); trusted -> on:false
+    btn.onclick = () => setAllow(d.id, isThreat);   // threat/peer -> trust; trusted -> untrust
     el.appendChild(btn);
 }
 async function setAllow(id, on) {
@@ -251,5 +279,79 @@ async function fetchRadar() {
             ul.appendChild(li);
         });
         document.getElementById('trusted-count').textContent = trusted.length;
+        renderKindAlerts(data.kinds || []);
     } catch (e) { /* offline */ }
+}
+
+// Persistent threat journal (relative timestamps: boot counter + minutes-since-boot,
+// since the device has no RTC).
+let lastLog = [];
+async function fetchThreatLog() {
+    try {
+        const res = await fetch('/api/threatlog');
+        const data = await res.json();
+        lastLog = data.log || [];
+        document.getElementById('log-count').textContent = lastLog.length;
+        const tbl = document.getElementById('log-table');
+        if (!tbl) return;
+        let html = '<tr><th>when</th><th>kind</th><th>MAC</th><th>dBm</th><th>min</th><th>sc</th></tr>';
+        lastLog.forEach(e => {
+            html += '<tr><td>b' + e.boot + '+' + e.uptime_min + 'm</td><td>' + e.kind +
+                '</td><td><code>' + fmtMac(e.id) + '</code></td><td>' + e.rssi +
+                '</td><td>' + e.minutes + '</td><td>' + e.scenes + '</td></tr>';
+        });
+        tbl.innerHTML = html;
+    } catch (e) { /* offline */ }
+}
+// Jam episode journal (relative timestamps: boot counter + minutes-since-boot,
+// since the device has no RTC).
+async function fetchJamLog() {
+    try {
+        const res = await fetch('/api/jamlog');
+        const data = await res.json();
+        const log = data.log || [];
+        document.getElementById('jam-log-count').textContent = log.length;
+        const tbl = document.getElementById('jam-log-table');
+        if (!tbl) return;
+        let html = '<tr><th>when</th><th>band</th><th>intensity</th><th>dur</th></tr>';
+        if (log.length === 0) {
+            html += '<tr><td colspan="4" style="color:#a1a1aa;">No jamming episodes recorded.</td></tr>';
+        }
+        log.forEach(e => {
+            const band = e.band === 3 ? 'Wi-Fi + 2.4 GHz RF' : e.band === 2 ? '2.4 GHz RF' : 'Wi-Fi';
+            const intensity = [];
+            if (e.band & 2) intensity.push(e.peak + ' dBm');
+            if (e.band & 1) intensity.push((e.rate ?? 0) + '/s');
+            html += '<tr><td>b' + e.boot + '+' + e.uptime_min + 'm</td><td>' + band +
+                '</td><td>' + intensity.join(' · ') + '</td><td>' + e.dur + 's</td></tr>';
+        });
+        tbl.innerHTML = html;
+    } catch (e) { /* offline */ }
+}
+
+function downloadLogCsv() {
+    const rows = [['boot', 'uptime_min', 'kind', 'mac', 'rssi', 'minutes', 'scenes']];
+    lastLog.forEach(e => rows.push([e.boot, e.uptime_min, e.kind, fmtMac(e.id), e.rssi, e.minutes, e.scenes]));
+    const csv = rows.map(r => r.join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'splinter-threats.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
+}
+
+// Kind-level tracker alerts: a commercial tracker (AirTag/SmartTag/Tile) rotates
+// its MAC, so it's detected at the kind level — "N present vs your baseline".
+function renderKindAlerts(kinds) {
+    const box = document.getElementById('kind-alerts');
+    if (!box) return;
+    if (!kinds.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
+    box.style.display = '';
+    box.innerHTML = kinds.map(k => {
+        const extra = Math.max(0, (k.present || 0) - (k.baseline || 0));
+        return '⚠ <strong>' + k.kind + '</strong> tracker following you — ' +
+            k.present + ' present, ' + k.baseline + ' expected' +
+            ' (' + extra + ' unexplained, survived ' + k.scenes + ' moves)';
+    }).join('<br>');
 }

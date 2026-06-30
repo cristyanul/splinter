@@ -75,6 +75,14 @@
                         </label>
                         <span class="label-text">ESP-NOW Swarm Mode</span>
                     </div>
+
+                    <div class="control-group">
+                        <label class="toggle">
+                            <input type="checkbox" id="jam_detect_enabled">
+                            <span class="slider"></span>
+                        </label>
+                        <span class="label-text">Passive Jam Detection</span>
+                    </div>
                     <div class="advanced-configs" style="margin-top: 2rem; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 1rem;">
                         <h3 style="margin-bottom: 1rem; color: #a1a1aa; font-size: 0.9rem;">BLE Advanced</h3>
                         <div class="input-group">
@@ -141,6 +149,7 @@
                 <div class="stat-row"><span>Thread frames</span><span class="stat-value" id="stat-thread">0/s</span></div>
                 <div class="stat-row"><span>Wi-Fi probes</span><span class="stat-value" id="stat-wifi">0/s</span></div>
                 <div class="stat-row"><span>AWDL (AirDrop)</span><span class="stat-value" id="stat-awdl">0/s</span></div>
+                <div class="stat-row"><span>RF Jam Detect</span><span id="jam-status" class="jam-status-clear">Clear</span></div>
 
                 <h3 style="margin-top: 2rem; margin-bottom: 0.75rem; color: #a1a1aa; font-size: 0.9rem;">Firmware Update (OTA)</h3>
                 <div class="input-group">
@@ -154,6 +163,7 @@
 
             <div class="card radar-card">
                 <h2>Threat Radar <span id="threat-badge" class="badge-zero">0</span></h2>
+                <div id="kind-alerts" class="kind-alerts" style="display:none;"></div>
                 <div class="radar-wrap">
                     <svg id="radar" viewBox="0 0 200 200" class="radar-svg"></svg>
                 </div>
@@ -163,6 +173,15 @@
                 <details class="trusted-box">
                     <summary>Trusted devices (<span id="trusted-count">0</span>)</summary>
                     <ul id="trusted-list" class="trusted-list"></ul>
+                </details>
+                <details class="trusted-box">
+                    <summary>Threat journal (<span id="log-count">0</span>)</summary>
+                    <table id="log-table" class="log-table"></table>
+                    <button id="btn-log-csv" class="btn" style="margin-top:.6rem;">Download CSV</button>
+                </details>
+                <details class="trusted-box">
+                    <summary>Jam history (<span id="jam-log-count">0</span>)</summary>
+                    <table id="jam-log-table" class="log-table"></table>
                 </details>
             </div>
         </div>

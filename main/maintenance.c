@@ -29,6 +29,7 @@
 #include "decoys_154.h"
 #include "decoys_wifi.h"
 #include "detector.h"
+#include "jam_detect.h"
 
 static const char *TAG = "splinter-maint";
 
@@ -112,13 +113,14 @@ static esp_err_t api_config_get(httpd_req_t *req) {
         "\"ieee154_chan_mask\":%lu,\"ieee154_beacon_ms\":%u,\"ieee154_respond\":%s,"
         // softap_pass is deliberately NOT returned (it would leak the AP key to
         // anyone on the network); the UI sends a new one only to change it.
-        "\"wifi_interval_ms\":%u,\"softap_ssid\":\"%s\",\"softap_pass\":\"\"}",
+        "\"wifi_interval_ms\":%u,\"softap_ssid\":\"%s\",\"softap_pass\":\"\","
+        "\"jam_detect_enabled\":%s}",
         c->ble_enabled?"true":"false", c->ieee154_enabled?"true":"false", c->wifi_enabled?"true":"false",
         c->profiles_enabled?"true":"false", c->swarm_enabled?"true":"false",
         c->thread_enabled?"true":"false", c->awdl_enabled?"true":"false",
         c->ble_adv_ms, c->ble_name_prob, c->ble_mfg_prob, c->ble_refresh_ms,
         (unsigned long)c->ieee154_chan_mask, c->ieee154_beacon_ms, c->ieee154_respond?"true":"false",
-        c->wifi_interval_ms, c->softap_ssid);
+        c->wifi_interval_ms, c->softap_ssid, c->jam_detect_enabled?"true":"false");
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, buf);
 }
@@ -145,6 +147,7 @@ static esp_err_t api_config_post(httpd_req_t *req) {
     c->ieee154_respond = (strstr(body, "\"ieee154_respond\":true") != NULL);
     c->thread_enabled = (strstr(body, "\"thread_enabled\":true") != NULL);
     c->awdl_enabled = (strstr(body, "\"awdl_enabled\":true") != NULL);
+    c->jam_detect_enabled = (strstr(body, "\"jam_detect_enabled\":true") != NULL);
 
     // Simple JSON parsing for numbers and strings
     char *p;
@@ -184,21 +187,26 @@ static esp_err_t api_config_post(httpd_req_t *req) {
 }
 
 static esp_err_t api_status_get(httpd_req_t *req) {
-    char buf[320];
+    char buf[448];
     uint32_t uptime = esp_log_timestamp() / 1000;
     uint32_t heap = esp_get_free_heap_size();
+    jam_status_t js;
+    jam_detect_get_status(&js);
     snprintf(buf, sizeof(buf),
         "{\"uptime\":%lu,\"free_heap\":%lu,"
         "\"ble_rate\":%lu,\"ieee154_rate\":%lu,\"wifi_rate\":%lu,"
         "\"thread_rate\":%lu,\"awdl_rate\":%lu,"
-        "\"threats\":%lu}",
+        "\"threats\":%lu,"
+        "\"jam_active\":%u,\"jam_band\":%u,\"jam_peak\":%d,\"jam_rate\":%u,\"jam_dur\":%u}",
         (unsigned long)uptime, (unsigned long)heap,
         (unsigned long)decoys_ble_rate(),
         (unsigned long)decoys_154_rate(),
         (unsigned long)decoys_wifi_rate(),
         (unsigned long)decoys_154_thread_rate(),
         (unsigned long)decoys_wifi_awdl_rate(),
-        (unsigned long)detector_threat_count());
+        (unsigned long)detector_threat_count(),
+        (unsigned)js.jammed, (unsigned)js.band, (int)js.peak_energy,
+        (unsigned)js.peak_rate, (unsigned)js.duration_s);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, buf);
 }
@@ -420,7 +428,8 @@ static esp_err_t api_radar_get(httpd_req_t *req) {
             dev[i].id[0], dev[i].id[1], dev[i].id[2], dev[i].id[3], dev[i].id[4], dev[i].id[5],
             dev[i].radio == DC_RADIO_BLE ? "ble" : "wifi",
             trk_name(dev[i].tracker_kind), dev[i].rssi, dev[i].minutes, dev[i].scenes,
-            dev[i].category == DC_CAT_THREAT ? "threat" : "trusted");
+            dev[i].category == DC_CAT_THREAT ? "threat" :
+            dev[i].category == DC_CAT_PEER   ? "peer" : "trusted");
     }
     o += snprintf(buf + o, sizeof(buf) - o, "],\"trusted\":[");
     for (int i = 0; i < nt; i++) {
@@ -429,7 +438,54 @@ static esp_err_t api_radar_get(httpd_req_t *req) {
             i ? "," : "",
             trust[i][0], trust[i][1], trust[i][2], trust[i][3], trust[i][4], trust[i][5]);
     }
+    // Kind-level tracker alerts: an unexplained number of one tracker kind has
+    // stayed close across scene changes (rotation-proof).
+    dc_kind_alert_t ka[DC_TRK_COUNT];
+    int nk = detector_kind_alerts(ka, DC_TRK_COUNT);
+    o += snprintf(buf + o, sizeof(buf) - o, "],\"kinds\":[");
+    for (int i = 0; i < nk; i++) {
+        if (o > (int)sizeof(buf) - 96) break;
+        o += snprintf(buf + o, sizeof(buf) - o,
+            "%s{\"kind\":\"%s\",\"present\":%u,\"baseline\":%u,\"scenes\":%u}",
+            i ? "," : "", trk_name(ka[i].kind), ka[i].present, ka[i].baseline, ka[i].scenes);
+    }
     if (o > (int)sizeof(buf) - 4) o = (int)sizeof(buf) - 4;
+    o += snprintf(buf + o, sizeof(buf) - o, "]}");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, buf);
+}
+
+static esp_err_t api_threatlog_get(httpd_req_t *req) {
+    threat_log_t log[24];
+    int n = detector_threatlog(log, 24);
+    char buf[2560];
+    int o = snprintf(buf, sizeof(buf), "{\"log\":[");
+    for (int i = 0; i < n; i++) {
+        if (o > (int)sizeof(buf) - 160) break;
+        o += snprintf(buf + o, sizeof(buf) - o,
+            "%s{\"boot\":%u,\"uptime_min\":%u,\"kind\":\"%s\","
+            "\"id\":\"%02x%02x%02x%02x%02x%02x\",\"rssi\":%d,\"minutes\":%u,\"scenes\":%u}",
+            i ? "," : "", log[i].boot, log[i].uptime_min, trk_name(log[i].kind),
+            log[i].id[0], log[i].id[1], log[i].id[2], log[i].id[3], log[i].id[4], log[i].id[5],
+            log[i].rssi, log[i].minutes, log[i].scenes);
+    }
+    o += snprintf(buf + o, sizeof(buf) - o, "]}");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, buf);
+}
+
+static esp_err_t api_jamlog_get(httpd_req_t *req) {
+    jam_event_t log[16];
+    int n = jam_detect_journal(log, 16);
+    char buf[1024];
+    int o = snprintf(buf, sizeof(buf), "{\"log\":[");
+    for (int i = 0; i < n; i++) {
+        if (o > (int)sizeof(buf) - 80) break;
+        o += snprintf(buf + o, sizeof(buf) - o,
+            "%s{\"boot\":%u,\"uptime_min\":%u,\"band\":%u,\"peak\":%d,\"rate\":%u,\"dur\":%u}",
+            i ? "," : "", log[i].boot, log[i].uptime_min, (unsigned)log[i].band,
+            (int)log[i].peak_energy, (unsigned)log[i].peak_rate, (unsigned)log[i].duration_s);
+    }
     o += snprintf(buf + o, sizeof(buf) - o, "]}");
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, buf);
@@ -442,7 +498,7 @@ static void http_start(void)
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.lru_purge_enable = true;
     cfg.stack_size = 8192;
-    cfg.max_uri_handlers = 16; // default is 8; we register 12 and want headroom
+    cfg.max_uri_handlers = 16; // default is 8; we register 14 and want headroom
     if (httpd_start(&srv, &cfg) != ESP_OK) {
         ESP_LOGE(TAG, "http server start failed");
         return;
@@ -460,6 +516,8 @@ static void http_start(void)
         { .uri = "/api/allow",   .method = HTTP_POST, .handler = api_allow_post },
         { .uri = "/api/safe",    .method = HTTP_POST, .handler = api_safe_post },
         { .uri = "/api/radar",   .method = HTTP_GET,  .handler = api_radar_get },
+        { .uri = "/api/threatlog", .method = HTTP_GET, .handler = api_threatlog_get },
+        { .uri = "/api/jamlog",    .method = HTTP_GET, .handler = api_jamlog_get },
     };
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
         httpd_register_uri_handler(srv, &routes[i]);

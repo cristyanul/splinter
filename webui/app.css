@@ -228,3 +228,12 @@ input:checked + .slider:before { transform: translateX(20px); }
 .trusted-list code { font-family:monospace; }
 .trusted-list .meta { color:#777; font-size:.8rem; margin-left:.4rem; }
 .trusted-list .rm { background:#555; color:#fff; border:0; border-radius:4px; padding:.1rem .55rem; cursor:pointer; }
+.kind-alerts { background:rgba(255,77,77,.14); border:1px solid rgba(255,77,77,.5); color:#ff9a9a; border-radius:8px; padding:.6rem .8rem; margin-bottom:.8rem; font-size:.82rem; line-height:1.45; }
+.kind-alerts strong { color:#ffce6b; }
+.blip-peer { fill:#ffae42; animation:blip-pulse 2s ease-in-out infinite; }
+.log-table { width:100%; border-collapse:collapse; font-size:.78rem; margin-top:.5rem; }
+.log-table th { text-align:left; color:#a1a1aa; font-weight:600; padding:.2rem .3rem; border-bottom:1px solid rgba(255,255,255,.1); }
+.log-table td { padding:.2rem .3rem; border-bottom:1px solid rgba(255,255,255,.05); }
+.log-table code { font-family:monospace; }
+.jam-status-clear { color:#00ff80; font-weight:600; font-variant-numeric:tabular-nums; }
+.jam-status-alert { color:#ff4d4d; font-weight:600; font-variant-numeric:tabular-nums; animation:blip-pulse 1.5s ease-in-out infinite; }
